@@ -1,0 +1,72 @@
+import { afterAll, beforeAll, test, expect } from 'bun:test';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { JsonPadStore } from '../server/json-store';
+import { createApi } from '../server/api';
+let dir:string, file:string, store:JsonPadStore, api:ReturnType<typeof createApi>;
+beforeAll(async()=>{
+ dir=await mkdtemp(join(tmpdir(),'libretto-json-test-'));
+ file=join(dir,'scripts.json');
+ store=await JsonPadStore.open(file);
+ expect(store.list()).toEqual([]);
+ api=createApi(store);
+});
+afterAll(async()=>{if(dir)await rm(dir,{recursive:true,force:true});});
+const req=(path:string,method='GET',body?:unknown,headers:Record<string,string>={})=>api(new Request('http://localhost:3001/api'+path,{method,headers:{'content-type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)}));
+test('JSON persists Unicode and revisions across restart',async()=>{
+ expect(await (await req('/health')).json()).toEqual({database:'json',ok:true});
+ const created=await req('/pads','POST');expect(created.status).toBe(201);const pad=await created.json();
+ const content='# Draft\n\n日本語 — café\n\n**Bold** and `code`.';
+ const saved=await req('/pads/'+pad.id,'PUT',{...pad,title:"Writer's pad",content,pinned:true});expect(saved.status).toBe(200);
+ const updated=await saved.json();expect(updated.revision).toBe(2);expect(updated.pinned).toBe(true);
+ const raw=JSON.parse(await readFile(file,'utf8'));
+ expect(raw.version).toBe(1);
+ expect(raw.scripts.find((p:any)=>p.id===pad.id).content).toBe(content);
+ expect((await JsonPadStore.open(file)).get(pad.id)?.content).toBe(content);
+ expect((await req('/pads/'+pad.id,'PUT',{...pad,content:'stale'})).status).toBe(409);
+ expect((await (await req('/pads')).json()).some((p:any)=>p.id===pad.id)).toBe(true);
+ expect((await req('/pads/'+pad.id,'DELETE')).status).toBe(204);
+ expect((await JsonPadStore.open(file)).get(pad.id)).toBeUndefined();
+ expect((await readdir(dir)).filter(n=>n.endsWith('.tmp'))).toEqual([]);
+});
+test('Simultaneous saves serialize; only one stale revision commits',async()=>{
+ const pad=await (await req('/pads','POST')).json();
+ const [a,b]=await Promise.all([req('/pads/'+pad.id,'PUT',{...pad,content:'first'}),req('/pads/'+pad.id,'PUT',{...pad,content:'second'})]);
+ expect([a.status,b.status].sort()).toEqual([200,409]);
+ expect((await (await req('/pads/'+pad.id)).json()).revision).toBe(2);
+ await req('/pads/'+pad.id,'DELETE');
+});
+test('Reject invalid input, malformed JSON, and cross-origin writes',async()=>{
+ const pad=await (await req('/pads','POST')).json();
+ expect((await req('/pads/'+pad.id,'PUT',{...pad,title:'x'.repeat(201)})).status).toBe(400);
+ expect((await req('/pads/'+pad.id,'PUT',{...pad,pinned:'yes'})).status).toBe(400);
+ expect((await req('/pads/'+pad.id,'PUT',{...pad,content:'x'.repeat(2_000_001)})).status).toBe(400);
+ expect((await req('/pads/not-a-uuid')).status).toBe(404);
+ expect((await req('/pads','POST',undefined,{origin:'https://untrusted.example'})).status).toBe(403);
+ const response=await api(new Request('http://localhost:3001/api/pads/'+pad.id,{method:'PUT',body:'{oops'}));expect(response.status).toBe(400);
+ await req('/pads/'+pad.id,'DELETE');
+});
+test('Explicit development origin is allowed without allowing arbitrary origins',async()=>{
+ const devApi=createApi(store,new Set(['http://localhost:4173']));
+ const response=await devApi(new Request('http://localhost:3001/api/pads',{method:'POST',headers:{origin:'http://localhost:4173'}}));
+ expect(response.status).toBe(201);const pad=await response.json();await req('/pads/'+pad.id,'DELETE');
+});
+test('Empty database stays empty; corrupt JSON is never overwritten',async()=>{
+ const another=join(dir,'empty.json');
+ const empty=await JsonPadStore.open(another);
+ for(const pad of empty.list()) await empty.delete(pad.id);
+ expect((await JsonPadStore.open(another)).list()).toEqual([]);
+ const bad=join(dir,'invalid.json');await writeFile(bad,'{ broken data');
+ await expect(JsonPadStore.open(bad)).rejects.toThrow();
+ expect(await readFile(bad,'utf8')).toBe('{ broken data');
+});
+test('Previous JSON shape upgrades without losing a Script',async()=>{
+ const previous=join(dir,'previous.json');
+ const existing=await store.create();
+ await writeFile(previous,JSON.stringify({version:1,pads:[existing]}));
+ const loaded=await JsonPadStore.open(previous);
+ expect(loaded.get(existing.id)?.title).toBe(existing.title);
+ expect(JSON.parse(await readFile(previous,'utf8')).scripts[0].id).toBe(existing.id);
+ await store.delete(existing.id);
+});
