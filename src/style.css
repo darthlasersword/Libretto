@@ -48,11 +48,16 @@ button:active:not(:disabled){transform:scale(.97)}
 @keyframes content-in{from{opacity:0}to{opacity:1}}
 @media(prefers-reduced-motion:reduce){.writer,.dashboard,.pad-card,.reading,.paper>div:not(.hidden)>.codemirror-host{animation:none}button,.script-row,.pad-card,.sidebar,.topbar,.writer-toolbar,.editor-footer,.library-toolbar,.segmented,.dropdown,.modal,.toolbar-title-input{transition:none}}
 
-.pad-card h3{margin-right:58px}
+.pad-card h3{margin-right:86px}
+.card-rename{position:absolute;z-index:2;top:13px;left:16px;width:calc(100% - 116px);min-width:0;background:var(--card);border:0;border-bottom:1px solid var(--text);padding:2px 0;font:700 13px Writer,monospace}
+.card-rename-button{position:absolute;top:10px;right:68px;width:25px;height:25px;color:var(--muted);opacity:.65}
 .card-delete{position:absolute;top:10px;right:39px;width:25px;height:25px;color:var(--muted);opacity:.65}
+.card-rename-button:hover,.card-rename-button:focus-visible{opacity:1;color:var(--text)}
 .card-delete:hover,.card-delete:focus-visible{opacity:1;color:var(--text)}
+.pad-list .card-rename{top:11px;font-size:11px}
+.pad-list .card-rename-button{top:10px;right:67px}
 .pad-list .card-delete{top:10px;right:38px}
-.pad-list .card-bottom{margin-right:58px}
+.pad-list .card-bottom{margin-right:86px}
 .sidebar-bottom{justify-content:space-between;align-items:center}
 .shortcuts-button{font-size:11px;color:var(--secondary);padding:5px 7px}
 .shortcuts-modal{max-width:620px;max-height:min(80vh,700px);overflow:auto}

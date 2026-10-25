@@ -59,6 +59,7 @@
   let searchInput: HTMLInputElement;
   let renameInput: HTMLInputElement;
   let renameId: string | null = null,
+    renameSource: "sidebar" | "card" = "sidebar",
     renameValue = "",
     renaming = false;
   let deleteTarget: Pad | null = null;
@@ -264,9 +265,10 @@
       error = (e as Error).message;
     }
   }
-  async function beginRename(pad: Pad) {
+  async function beginRename(pad: Pad, source: "sidebar" | "card" = "sidebar") {
     if (active && !(await flush())) return;
     renameId = pad.id;
+    renameSource = source;
     renameValue = (pads.find((p) => p.id === pad.id) || pad).title;
     await tick();
     renameInput?.select();
@@ -529,7 +531,7 @@
       <div class="script-list">
         {#each [...pads].sort((a, b) => +new Date(b.updated_at) - +new Date(a.updated_at)) as pad (pad.id)}
           <div class:current={active?.id === pad.id} class="script-row">
-            {#if renameId === pad.id}
+            {#if renameId === pad.id && renameSource === "sidebar"}
               <input
                 bind:this={renameInput}
                 class="sidebar-rename"
@@ -808,7 +810,24 @@
                           <span>{date(pad.updated_at)}</span><span
                             >{wordCount(pad.content)} words</span
                           >
-                        </div></button
+                        </div></button>
+                      {#if renameId === pad.id && renameSource === "card"}<input
+                          bind:this={renameInput}
+                          class="card-rename"
+                          bind:value={renameValue}
+                          maxlength="200"
+                          aria-label={"Rename " + pad.title}
+                          onblur={() => commitRename(pad.id)}
+                          onkeydown={(event) => {
+                            if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); }
+                            if (event.key === "Escape") { event.preventDefault(); cancelRename(); }
+                          }}
+                        />{/if}
+                      <button
+                        class="card-rename-button icon"
+                        onclick={() => beginRename(pad, "card")}
+                        aria-label={"Rename " + pad.title}
+                        title="Rename Script"><Pencil size={14} /></button
                       ><button
                         class="card-pin icon"
                         class:filled={pad.pinned}
