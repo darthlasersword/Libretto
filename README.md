@@ -2,6 +2,8 @@
 
 A local Markdown editor built with Svelte, CodeMirror, and Bun.
 
+See [CODEBASE.md](CODEBASE.md) for the app's structure, storage, and data flow.
+
 ## Run
 
 Install [Bun](https://bun.sh/), then in this folder:
