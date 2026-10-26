@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { fade, fly } from "svelte/transition";
+  import { fly } from "svelte/transition";
   import {
     ArrowLeft,
     Plus,
@@ -547,8 +547,8 @@
       class="sidebar-scrim"
       aria-label="Close sidebar"
       onclick={() => (sidebar = false)}
-    ></button>
-    <aside class="sidebar">
+    ></button>{/if}
+    <aside class="sidebar" inert={!sidebar || focus} aria-hidden={!sidebar || focus}>
       <a
         href="/"
         class="brand"
@@ -637,7 +637,7 @@
           >{#if dark}<Sun size={17} />{:else}<Moon size={17} />{/if}</button
         >
       </div>
-    </aside>{/if}
+    </aside>
   <main>
     {#if !focus}
       <header class="topbar">
@@ -645,7 +645,7 @@
           class="icon sidebar-toggle"
           onclick={() => (sidebar = !sidebar)}
           aria-label="Toggle sidebar"
-          >{#key sidebar}<span class="sidebar-toggle-icon" transition:fade={{duration:160}}>{#if sidebar}<PanelLeftClose size={17} />{:else}<PanelLeftOpen size={17} />{/if}</span>{/key}</button
+          >{#if sidebar}<PanelLeftClose size={17} />{:else}<PanelLeftOpen size={17} />{/if}</button
         ><button
           class="icon mobile-theme"
           aria-label={dark ? "Use light theme" : "Use dark theme"}
@@ -863,11 +863,11 @@
               >{/if}
           </div>
         {:else}
-          {#each filter === "pinned" ? [{ name: "", items: visible }] : query ? [{ name: "", items: visible }] : [{ name: "Pinned", items: pinned }, { name: pinned.length ? "Other" : "", items: others }] as group}
+          {#each filter === "pinned" ? [{ name: "", items: visible }] : query ? [{ name: "", items: visible }] : [{ name: "Pinned", items: pinned }, { name: "", items: others }] as group}
             {#if group.items.length}<section class="pad-section">
                 {#if group.name}<h2 class="section-heading">
                     {group.name}
-                  </h2>{/if}
+                  </h2>{:else if filter === "all" && !query && pinned.length}<hr class="section-divider" />{/if}
                 <div class:pad-list={layout === "list"} class="pad-grid">
                   {#each group.items as pad}
                     <div class="pad-card" class:selected={selectedId === pad.id} data-pad-id={pad.id}>
