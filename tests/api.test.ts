@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, test, expect } from 'bun:test';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { JsonPadStore } from '../server/json-store';
@@ -89,6 +89,24 @@ test('Previous JSON shape upgrades without losing a file',async()=>{
  expect(JSON.parse(await readFile(previous,'utf8')).scripts[0].content).toBeUndefined();
  expect(await readFile(join(dir,'saves','Untitled.md'),'utf8')).toBe(existing.content);
  await store.delete(existing.id);
+});
+test('Partially migrated version 2 data opens title-based files without losing content',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rune-partial-migration-'));
+ try {
+  const index=join(root,'data','scripts.json');
+  const active={id:crypto.randomUUID(),title:'Hello',pinned:false,revision:1,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+  const deleted={...active,id:crypto.randomUUID(),title:'Old note',deleted_at:new Date().toISOString()};
+  await mkdir(join(root,'data'),{recursive:true});
+  await mkdir(join(root,'saves'));await mkdir(join(root,'trash'));
+  await writeFile(index,JSON.stringify({version:2,scripts:[active],trash:[deleted]}));
+  await writeFile(join(root,'saves','Hello.md'),'kept active');
+  await writeFile(join(root,'trash','Old note.md'),'kept deleted');
+  const recovered=await JsonPadStore.open(index);
+  expect(recovered.get(active.id)?.content).toBe('kept active');
+  expect(recovered.listTrash()[0]?.content).toBe('kept deleted');
+  expect(JSON.parse(await readFile(index,'utf8')).version).toBe(3);
+  expect((await JsonPadStore.open(index)).get(active.id)?.content).toBe('kept active');
+ } finally { await rm(root,{recursive:true,force:true}); }
 });
 test('Trash persists, restores files, and permanently deletes selected or all',async()=>{
  const trashFile=join(dir,'trash.json');

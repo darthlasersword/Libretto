@@ -70,17 +70,32 @@ export class JsonPadStore {
    throw new Error(`Invalid Rune data file: ${store.path}. Your file was left untouched.`);
   }
   if (parsed.version < 3) {
+   // A previous migration may have written title-based files before updating the index.
+   // Resolve every source before writing anything, so a missing file leaves the index intact.
+   const legacyContent = async (p: Pad, deleted: boolean): Promise<string> => {
+    if (parsed.version === 1) return p.content;
+    const paths = deleted
+     ? [join(store.savesPath, `${p.id}.md`), join(store.trashPath, `${p.id}.md`), join(store.trashPath, `${slug(p.title)}.md`)]
+     : [join(store.savesPath, `${p.id}.md`), join(store.savesPath, `${slug(p.title)}.md`)];
+    for (const path of paths) {
+     try { return await readFile(path, 'utf8'); }
+     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
+    throw new Error(`Missing content for ${deleted ? 'trashed' : 'active'} Rune file "${p.title}" (${p.id}). Checked: ${paths.join(', ')}. Your index was left untouched.`);
+   };
+   const activeContents = await Promise.all((scripts as Pad[]).map(p => legacyContent(p, false)));
+   const trashContents = await Promise.all((trash as TrashedPad[]).map(p => legacyContent(p, true)));
    const oldPaths: string[] = [];
-   for (const p of scripts as Pad[]) {
-    const content = parsed.version === 1 ? p.content : await readFile(join(store.savesPath, `${p.id}.md`), 'utf8');
+   for (const [index, p] of (scripts as Pad[]).entries()) {
+    const content = activeContents[index];
     const filename = await store.filename(p.title);
     const meta = {...metadata({...p,content}),filename};
     await store.atomicWrite(store.activePath(meta),content);
     store.data.scripts.push(meta); store.contents.set(p.id,content);
     if (parsed.version === 2) oldPaths.push(join(store.savesPath, `${p.id}.md`));
    }
-   for (const p of trash as TrashedPad[]) {
-    const content = parsed.version === 1 ? p.content : await readFile(join(store.savesPath, `${p.id}.md`), 'utf8');
+   for (const [index, p] of (trash as TrashedPad[]).entries()) {
+    const content = trashContents[index];
     const filename=await store.trashFilename(p.title);
     await store.atomicWrite(join(store.trashPath,filename),content);
     const {content: _,...rest} = p;

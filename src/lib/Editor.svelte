@@ -18,7 +18,6 @@
   import { tags } from "@lezer/highlight";
   export let content = "";
   export let onchange: (value: string) => void;
-  export let onselection: (line: number, column: number) => void = () => {};
   export let onshowshortcuts: () => void = () => {};
   let host: HTMLDivElement;
   let view: EditorView;
@@ -118,11 +117,6 @@
           }),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) onchange(update.state.doc.toString());
-            if (update.selectionSet || update.docChanged) {
-              const pos = update.state.selection.main.head;
-              const line = update.state.doc.lineAt(pos);
-              onselection(line.number, pos - line.from + 1);
-            }
           }),
         ],
       }),

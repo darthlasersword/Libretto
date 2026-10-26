@@ -56,8 +56,6 @@
     creating = false;
   let sort: "updated" | "title" = "updated";
   let editor: Editor;
-  let line = 1,
-    column = 1;
   let timer: ReturnType<typeof setTimeout>;
   let generation = 0;
   let titleInput: HTMLInputElement;
@@ -280,8 +278,6 @@
     focus = false;
     menu = false;
     titleEditing = false;
-    line = 1;
-    column = 1;
     if (innerWidth <= 760) sidebar = false;
   }
   async function back() {
@@ -708,7 +704,7 @@
       </div>
     </aside>
   <main>
-    {#if !focus}
+    {#if !focus && !active}
       <header class="topbar">
         <button
           class="icon sidebar-toggle"
@@ -727,7 +723,11 @@
       <section class="writer">
         <div class="writer-toolbar" inert={focus && focusWriting && !focusReveal}>
           <div class="writer-back">
-            {#if !focus}<button onclick={back} class="text-button"
+            {#if !focus}<button class="icon sidebar-toggle writer-sidebar-toggle"
+                onclick={() => (sidebar = !sidebar)}
+                aria-label="Toggle sidebar" title="Toggle sidebar"
+                >{#if sidebar}<PanelLeftClose size={18} />{:else}<PanelLeftOpen size={18} />{/if}</button
+              ><button onclick={back} class="text-button writer-files"
                 ><ArrowLeft size={16} /> Files</button
               >{/if}<span class="save-status" class:failed={!!saveError}
               >{#if saving}<LoaderCircle size={13} class="spin" /> Saving{:else if saveError}<button
@@ -819,10 +819,6 @@
                   bind:this={editor}
                   content={active.content}
                   onchange={changed}
-                  onselection={(l, c) => {
-                    line = l;
-                    column = c;
-                  }}
                   onshowshortcuts={() => (shortcutsOpen = true)}
                 />{/key}
             </div>
@@ -832,28 +828,12 @@
               ></article>{/if}
           </div>
         </div>
-        <footer class="editor-footer" inert={focus && focusWriting && !focusReveal}>
-          <div>
-            {#if !reading}<button
-                onclick={() => editor?.wrap("**")}
-                title="Bold · Ctrl/⌘ B"><strong>B</strong></button
-              ><button
-                onclick={() => editor?.wrap("*")}
-                title="Italic · Ctrl/⌘ I"><em>I</em></button
-              ><button
-                onclick={() => editor?.wrap("[", "](https://)")}
-                title="Insert link">↗</button
-              ><span>Ln {line}, Col {column}</span>{/if}
-          </div>
-        </footer>
       </section>
     {:else}
       <div class="dashboard">
         <div class="dashboard-heading">
           <h1>{filter === "trash" ? "Trash" : filter === "pinned" ? "Pinned" : "Files"}</h1>
-          {#if filter !== "trash"}<button class="primary" onclick={create} disabled={creating}
-            ><Plus size={16} /> New File</button
-          >{:else if trash.length}<button class="trash-bulk icon" onclick={() => (permanentDelete = "all")}
+          {#if filter === "trash" && trash.length}<button class="trash-bulk icon" onclick={() => (permanentDelete = "all")}
             aria-label="Permanently delete all files" title="Permanently delete all files"><Trash2 size={18} /></button>{/if}
         </div>
         {#if filter === "trash"}
@@ -933,10 +913,6 @@
                   ? "No pinned files"
                   : "No files yet"}
             </p>
-            {#if !query && filter === "all"}<button
-                class="primary"
-                onclick={create}><Plus size={16} /> New File</button
-              >{/if}
           </div>
         {:else}
           {#each filter === "pinned" ? [{ name: "", items: visible }] : query ? [{ name: "", items: visible }] : [{ name: "Pinned", items: pinned }, { name: "", items: others }] as group}
