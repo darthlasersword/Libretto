@@ -10,7 +10,7 @@ const store=await JsonPadStore.open(process.env.RUNE_DATA_FILE || process.env.LI
 const devOrigins=process.env.CARETI_DEV_SERVER==='1'?new Set(['http://127.0.0.1:4173','http://localhost:4173']):new Set<string>();
 const api=createApi(store,devOrigins);
 const root=resolve(import.meta.dir,'../dist');
-const server=Bun.serve({hostname:process.env.HOST||'127.0.0.1',port:Number(process.env.PORT||3001),maxRequestBodySize:2100000,async fetch(req){
+const server=Bun.serve({hostname:process.env.HOST||'127.0.0.1',port:Number(process.env.PORT||3001),maxRequestBodySize:52000000,async fetch(req){
  const url=new URL(req.url);
  if(url.pathname.startsWith('/api/')) return api(req);
  if(req.method!=='GET'&&req.method!=='HEAD') return new Response('Method not allowed',{status:405});

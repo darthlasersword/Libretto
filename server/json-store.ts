@@ -5,6 +5,7 @@ import type { Pad, TrashedPad } from '../src/lib/types';
 type Meta = Omit<Pad, 'content'> & { filename: string };
 type TrashedMeta = Meta & { deleted_at: string };
 type DataFile = { version: 3; scripts: Meta[]; trash: TrashedMeta[] };
+type BackupFile = { kind: 'rune-backup'; version: 1; exported_at: string; scripts: Pad[]; trash: TrashedPad[] };
 const validId = /^[0-9a-f-]{36}$/i;
 const validName = (name: unknown): name is string => typeof name === 'string' && name.endsWith('.md') && name !== '.md' && !/[\\/]/.test(name) && name !== '..md';
 const isMeta = (item: unknown): item is Omit<Meta, 'filename'> => {
@@ -122,6 +123,47 @@ export class JsonPadStore {
  private full(p: Meta): Pad { const {filename:_,...rest}=p;return {...clone(rest),content:this.contents.get(p.id) ?? ''}; }
  list(): Pad[] { return this.data.scripts.map(p=>this.full(p)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)||a.id.localeCompare(b.id)); }
  listTrash(): TrashedPad[] { return this.data.trash.map(p=>this.full(p) as TrashedPad).sort((a,b)=>b.deleted_at.localeCompare(a.deleted_at)||a.id.localeCompare(b.id)); }
+ async backup(): Promise<BackupFile> {
+  await this.pending;
+  return {kind:'rune-backup',version:1,exported_at:new Date().toISOString(),scripts:this.list(),trash:this.listTrash()};
+ }
+ async importBackup(input: unknown): Promise<{scripts:number;trash:number}> {
+  const backup=input as Partial<BackupFile> | null;
+  const validPad=(item:unknown,deleted:boolean):boolean=>{
+   if(!isMeta(item))return false;
+   const p=item as Record<string,unknown>;
+   return validId.test(p.id as string) && typeof p.content==='string' && new TextEncoder().encode(p.content).length<=2_000_000 &&
+    (p.title as string).length<=200 && (!deleted || typeof p.deleted_at==='string');
+  };
+  if(!backup || backup.kind!=='rune-backup' || backup.version!==1 || !Array.isArray(backup.scripts) || !Array.isArray(backup.trash) ||
+   backup.scripts.length+backup.trash.length>10000 || !backup.scripts.every(p=>validPad(p,false)) || !backup.trash.every(p=>validPad(p,true)))
+   throw new TypeError('Invalid Rune backup file.');
+  const work=this.pending.then(async()=>{
+   const draft=clone(this.data);
+   const created:string[]=[];
+   const imported:{id:string;content:string}[]=[];
+   try {
+    for(const p of backup.scripts as Pad[]){
+     const id=crypto.randomUUID();const filename=await this.filename(p.title);
+     const meta:Meta={...metadata(p),id,filename};
+     const path=this.activePath(meta);await this.atomicWrite(path,p.content);
+     created.push(path);draft.scripts.push(meta);imported.push({id,content:p.content});
+    }
+    for(const p of backup.trash as TrashedPad[]){
+     const id=crypto.randomUUID();const filename=await this.trashFilename(p.title);
+     const {content:_,...rest}=p;const meta:TrashedMeta={...rest,id,filename};
+     const path=this.deletedPath(meta);await this.atomicWrite(path,p.content);
+     created.push(path);draft.trash.push(meta);imported.push({id,content:p.content});
+    }
+    await this.persist(draft);
+    this.data=draft;
+    for(const p of imported)this.contents.set(p.id,p.content);
+    return {scripts:backup.scripts!.length,trash:backup.trash!.length};
+   } catch(error){for(const path of created)await rm(path,{force:true}).catch(()=>{});throw error;}
+  });
+  this.pending=work.then(()=>{},()=>{});
+  return work;
+ }
  get(id:string):Pad|undefined { const p=this.data.scripts.find(p=>p.id===id);return p&&this.full(p); }
  async export(id:string):Promise<string|undefined> { const p=this.data.scripts.find(p=>p.id===id);return p&&readFile(this.activePath(p),'utf8'); }
  async create():Promise<Pad> { return this.mutate(async data=>{

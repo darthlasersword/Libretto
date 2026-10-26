@@ -11,6 +11,15 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
   }
   try {
    if (url.pathname==='/api/health' && req.method==='GET') return json({database:'json',ok:true});
+   if (url.pathname==='/api/backup') {
+    if (req.method==='GET') return new Response(JSON.stringify(await store.backup()),{headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
+    if (req.method==='POST') {
+     if (Number(req.headers.get('content-length'))>52_000_000) return json({error:'Backup is too large (50 MB limit).'},413);
+     const body=await req.text();
+     if (new TextEncoder().encode(body).length>52_000_000) return json({error:'Backup is too large (50 MB limit).'},413);
+     return json(await store.importBackup(JSON.parse(body)));
+    }
+   }
    if (url.pathname==='/api/pads') {
     if (req.method==='GET') return json(store.list());
     if (req.method==='POST') return json(await store.create(),201);
@@ -50,6 +59,7 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
    return json({error:'Method not allowed'},405);
   } catch(error) {
    if(error instanceof SyntaxError) return json({error:'Invalid JSON'},400);
+   if(error instanceof TypeError && error.message==='Invalid Rune backup file.') return json({error:error.message},400);
    console.error('API request failed',error);
    return json({error:'Unable to access the saved file. Your draft is still in this window.'},503);
   }

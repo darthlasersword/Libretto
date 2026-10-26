@@ -108,6 +108,50 @@ test('Partially migrated version 2 data opens title-based files without losing c
   expect((await JsonPadStore.open(index)).get(active.id)?.content).toBe('kept active');
  } finally { await rm(root,{recursive:true,force:true}); }
 });
+test('Backup restores active files and Trash as copies without changing existing work',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rune-backup-test-'));
+ try {
+  const source=await JsonPadStore.open(join(root,'source','data','scripts.json'));
+  const active=await source.create();
+  await source.update(active.id,{...active,title:'Draft',content:'Before edit'});
+  const old=await source.create();
+  await source.update(old.id,{...old,title:'Deleted',content:'Recover me'});
+  await source.delete(old.id);
+  const backup=await source.backup();
+  expect(backup.scripts[0].content).toBe('Before edit');
+  expect(backup.trash[0].content).toBe('Recover me');
+  await source.update(active.id,{...source.get(active.id)!,content:'After edit'});
+  const result=await source.importBackup(backup);
+  expect(result).toEqual({scripts:1,trash:1});
+  expect(source.get(active.id)?.content).toBe('After edit');
+  expect(source.list().map(p=>p.content).sort()).toEqual(['After edit','Before edit']);
+  expect(source.listTrash()).toHaveLength(2);
+  const reopened=await JsonPadStore.open(join(root,'source','data','scripts.json'));
+  expect(reopened.list().map(p=>p.content).sort()).toEqual(['After edit','Before edit']);
+  expect(reopened.listTrash().map(p=>p.content)).toEqual(['Recover me','Recover me']);
+  const before=await readFile(join(root,'source','data','scripts.json'),'utf8');
+  await expect(source.importBackup({...backup,scripts:[{...backup.scripts[0],content:12}]})).rejects.toThrow('Invalid Rune backup file');
+  expect(await readFile(join(root,'source','data','scripts.json'),'utf8')).toBe(before);
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+test('Backup API accepts a valid archive and rejects invalid imports',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rune-backup-api-'));
+ try {
+  const backupStore=await JsonPadStore.open(join(root,'data','scripts.json'));
+  const backupApi=createApi(backupStore);
+  const pad=await backupStore.create();
+  await backupStore.update(pad.id,{...pad,title:'Transfer',content:'portable'});
+  const get=await backupApi(new Request('http://localhost/api/backup'));
+  expect(get.status).toBe(200);
+  const archive=await get.json();
+  const post=await backupApi(new Request('http://localhost/api/backup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(archive)}));
+  expect(post.status).toBe(200);
+  expect(await post.json()).toEqual({scripts:1,trash:0});
+  expect(backupStore.list().map(p=>p.content)).toEqual(['portable','portable']);
+  const invalid=await backupApi(new Request('http://localhost/api/backup',{method:'POST',body:'{"kind":"wrong"}'}));
+  expect(invalid.status).toBe(400);
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
 test('Trash persists, restores files, and permanently deletes selected or all',async()=>{
  const trashFile=join(dir,'trash.json');
  const trashStore=await JsonPadStore.open(trashFile);

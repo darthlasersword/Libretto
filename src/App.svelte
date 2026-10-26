@@ -27,6 +27,8 @@
     Keyboard,
     Eye,
     RotateCcw,
+    Database,
+    Upload,
   } from "lucide-svelte";
   import Editor from "./lib/Editor.svelte";
   import { renderMarkdown } from "./lib/markdown";
@@ -70,6 +72,10 @@
   let deleteTarget: Pad | null = null;
   let shortcutsOpen = false;
   let selectedId: string | null = null;
+  let backupOpen = false;
+  let backupBusy = false;
+  let notice = "";
+  let noticeTimer: ReturnType<typeof setTimeout>;
   let stateReady = false;
   const stateKey = "rune-state-v1";
   const draftKey = "rune-draft-v1";
@@ -168,7 +174,7 @@
       if (selectedId && !pads.some((p) => p.id === selectedId)) selectedId = null;
       stateReady = true;
     });
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); clearTimeout(noticeTimer); };
   });
   async function request(path: string, options: RequestInit = {}) {
     const response = await fetch("/api" + path, {
@@ -425,16 +431,51 @@
   }
   function downloadDraft() {
     if (!active) return;
-    const url = URL.createObjectURL(
+    startDownload(
       new Blob([active.content], { type: "text/markdown;charset=utf-8" }),
+      (active.title.replace(/[\\/:*?"<>|]/g, "-") || "Untitled") + ".md",
     );
+    menu = false;
+  }
+  function showNotice(message: string) {
+    notice = message;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => (notice = ""), 5000);
+  }
+  function startDownload(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download =
-      (active.title.replace(/[\\/:*?"<>|]/g, "-") || "Untitled") + ".md";
+    a.download = filename;
     a.click();
-    URL.revokeObjectURL(url);
-    menu = false;
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    showNotice("Download started: " + filename);
+  }
+  async function downloadBackup() {
+    if (backupBusy) return;
+    backupBusy = true;
+    try {
+      if (active && !(await flush())) throw new Error(saveError || "Save the current file before backing up.");
+      const backup = await request("/backup");
+      const filename = "rune-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+      startDownload(new Blob([JSON.stringify(backup, null, 2)], {type:"application/json"}), filename);
+    } catch (e) { showNotice("Backup failed: " + (e as Error).message); }
+    finally { backupBusy = false; }
+  }
+  async function importBackup(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file || backupBusy) return;
+    backupBusy = true;
+    try {
+      if (file.size > 52_000_000) throw new Error("Backup is too large (50 MB limit).");
+      if (active && !(await flush())) throw new Error(saveError || "Save the current file before restoring.");
+      const result = await request("/backup", {method:"POST", body:await file.text()});
+      await load();
+      backupOpen = false;
+      showNotice(`Restored ${result.scripts} files and ${result.trash} trashed files.`);
+    } catch (e) { showNotice("Restore failed: " + (e as Error).message); }
+    finally { backupBusy = false; input.value = ""; }
   }
   async function download() {
     if (!active) return;
@@ -442,14 +483,10 @@
     try {
       const response = await fetch('/api/pads/' + active.id + '/export');
       if (!response.ok) throw new Error('Unable to export the saved file.');
-      const url = URL.createObjectURL(await response.blob());
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = (active.title.replace(/[\\/:*?"<>|]/g, '-') || 'Untitled') + '.md';
-      a.click();
-      URL.revokeObjectURL(url);
+      const filename = (active.title.replace(/[\\/:*?"<>|]/g, '-') || 'Untitled') + '.md';
+      startDownload(await response.blob(), filename);
       menu = false;
-    } catch (e) { error = (e as Error).message; }
+    } catch (e) { showNotice("Export failed: " + (e as Error).message); }
   }
   function preview(text: string) {
     return text
@@ -688,6 +725,8 @@
       </div>
       {#if error}<div class="sidebar-error" role="alert">{error}</div>{/if}
       <div class="sidebar-bottom">
+        <button class="shortcuts-button" onclick={() => (backupOpen = true)} title="Storage and backup"
+          ><Database size={16} /> Backup</button>
         <button
           class="shortcuts-button"
           onclick={() => (shortcutsOpen = true)}
@@ -974,6 +1013,19 @@
     {/if}
   </main>
 </div>
+{#if notice}<div class="notice" role="status">{notice}<button class="icon" onclick={() => (notice = "")} aria-label="Dismiss message"><X size={14} /></button></div>{/if}
+{#if backupOpen}
+  <dialog use:openDialog={() => (backupOpen = false)} class="modal backup-modal" oncancel={() => (backupOpen = false)} aria-modal="true" aria-label="Storage and backup">
+    <button class="modal-close icon" onclick={() => (backupOpen = false)} aria-label="Close backup"><X size={18} /></button>
+    <h2>Storage and backup</h2>
+    <p>By default, Rune saves scripts on this device in <code>saves</code>, deleted scripts in <code>trash</code>, and file details in <code>data/scripts.json</code>. Browser preferences stay in this browser.</p>
+    <p>Download a backup to move your library to another device or recover from accidental edits. It includes active scripts and Trash. Restoring adds copies and keeps current files.</p>
+    <div class="backup-actions">
+      <button class="primary" onclick={downloadBackup} disabled={backupBusy}><Download size={16} /> Download backup</button>
+      <label class:disabled={backupBusy} class="backup-upload"><Upload size={16} /> Restore backup<input type="file" accept=".json,application/json" onchange={importBackup} disabled={backupBusy} /></label>
+    </div>
+  </dialog>
+{/if}
 {#if deleteTarget}
   <dialog
     use:openDialog={() => (deleteTarget = null)}
