@@ -85,6 +85,7 @@
   let deleteTarget: Pad | null = null;
   let shortcutsOpen = false;
   let selectedId: string | null = null;
+  let readModes: Record<string, boolean> = {};
   let backupOpen = false;
   let backupBusy = false;
   let notice = "";
@@ -95,7 +96,7 @@
   type SavedState = {
     activeId: string | null; theme: "dark" | "light"; layout: "grid" | "list";
     filter: "all" | "pinned" | "trash"; sort: SortOrder; recentIds: string[];
-    query: string; sidebar: boolean; reading: boolean; focus: boolean;
+    query: string; sidebar: boolean; reading: boolean; readModes: Record<string, boolean>; focus: boolean;
     selectedId: string | null;
   };
   function readState(): Partial<SavedState> {
@@ -105,7 +106,7 @@
   $: if (stateReady) {
     const state: SavedState = {
       activeId: active?.id ?? null, theme: dark ? "dark" : "light", layout,
-      filter, sort, recentIds, query, sidebar, reading, focus, selectedId,
+      filter, sort, recentIds, query, sidebar, reading, readModes, focus, selectedId,
     };
     try { localStorage.setItem(stateKey, JSON.stringify(state)); } catch {}
   }
@@ -180,6 +181,9 @@
     query = typeof saved.query === "string" ? saved.query : "";
     sidebar = typeof saved.sidebar === "boolean" ? saved.sidebar : innerWidth > 760;
     selectedId = typeof saved.selectedId === "string" ? saved.selectedId : null;
+    readModes = saved.readModes && typeof saved.readModes === "object" && !Array.isArray(saved.readModes)
+      ? Object.fromEntries(Object.entries(saved.readModes).filter(([, value]) => typeof value === "boolean"))
+      : {};
     load().then(() => {
       if (error && !pads.length) return;
       const pad = pads.find((p) => p.id === saved.activeId);
@@ -196,7 +200,8 @@
             if (dirty) { updateLocal(); timer = setTimeout(() => save(), 650); }
           }
         } catch {}
-        reading = saved.reading === true;
+        reading = typeof readModes[pad.id] === "boolean" ? readModes[pad.id] : saved.reading === true;
+        readModes = { ...readModes, [pad.id]: reading };
         focus = saved.focus === true;
       }
       if (selectedId && !pads.some((p) => p.id === selectedId)) selectedId = null;
@@ -310,7 +315,7 @@
     sortMenu = false;
     dirty = false;
     saveError = "";
-    reading = false;
+    reading = readModes[pad.id] === true;
     focus = false;
     menu = false;
     titleEditing = false;
@@ -322,6 +327,10 @@
     focus = false;
     menu = false;
     titleEditing = false;
+  }
+  function setReading(value: boolean) {
+    reading = value;
+    if (active) readModes = { ...readModes, [active.id]: value };
   }
   async function showFilter(next: "all" | "pinned" | "trash") {
     if (active && !(await flush())) return;
@@ -641,7 +650,7 @@
     else if (key === "k" && !active) { event.preventDefault(); query = ""; searchInput?.focus(); }
     else if (key === "l" && !active) { event.preventDefault(); setLayout(layout === "grid" ? "list" : "grid"); }
     else if (key === "s" && !active && filter !== "trash") { event.preventDefault(); sortMenu = !sortMenu; }
-    else if (key === "v" && active) { event.preventDefault(); reading = !reading; }
+    else if (key === "v" && active) { event.preventDefault(); setReading(!reading); }
     else if (key === "m" && active) { event.preventDefault(); menu = !menu; }
     else if (key === "e" && active) { event.preventDefault(); download(); }
     else if (key === "u" && active && !reading) { event.preventDefault(); editor?.wrap("[", "](https://)"); }
@@ -835,12 +844,12 @@
             <div class="segmented">
               <button
                 class:active={!reading}
-                onclick={() => (reading = false)}
+                onclick={() => setReading(false)}
                 aria-label="Write"
                 title="Write"><Pencil size={15} /><span>Write</span></button
               ><button
                 class:active={reading}
-                onclick={() => (reading = true)}
+                onclick={() => setReading(true)}
                 aria-label="Read"
                 title="Read"><BookOpen size={15} /><span>Read</span></button
               >
