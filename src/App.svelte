@@ -28,8 +28,12 @@
   } from "lucide-svelte";
   import Editor from "./lib/Editor.svelte";
   import { renderMarkdown } from "./lib/markdown";
-  import { wordCount, type Pad } from "./lib/types";
+  import { wordCount, type Pad, type TrashedPad } from "./lib/types";
   let pads: Pad[] = [];
+  let trash: TrashedPad[] = [];
+  let trashAvailable = true;
+  let trashSelection: string[] = [];
+  let permanentDelete: string[] | "all" | null = null;
   let active: Pad | null = null;
   let loading = true,
     error = "",
@@ -37,7 +41,7 @@
     dirty = false,
     saveError = "";
   let query = "",
-    filter: "all" | "pinned" = "all",
+    filter: "all" | "pinned" | "trash" = "all",
     layout: "grid" | "list" = "grid";
   let dark = false,
     reading = false,
@@ -142,6 +146,14 @@
       pads = await request("/pads");
     } catch (e) {
       error = (e as Error).message;
+    }
+    try {
+      trash = await request("/trash");
+      trashAvailable = true;
+    } catch {
+      trash = [];
+      trashAvailable = false;
+      error = error || "Trash is unavailable. Restart the API server to enable it.";
     } finally {
       loading = false;
     }
@@ -227,11 +239,12 @@
     menu = false;
     titleEditing = false;
   }
-  async function showFilter(next: "all" | "pinned") {
+  async function showFilter(next: "all" | "pinned" | "trash") {
     if (active && !(await flush())) return;
     active = null;
     focus = false;
     filter = next;
+    trashSelection = [];
     if (innerWidth <= 760) sidebar = false;
   }
   async function create() {
@@ -307,13 +320,22 @@
   }
   async function remove() {
     if (!deleteTarget) return;
+    if (!trashAvailable) {
+      error = "Trash is unavailable. Restart the API server before deleting Scripts.";
+      deleteTarget = null;
+      return;
+    }
     const id = deleteTarget.id;
     if (active?.id === id) {
-      clearTimeout(timer);
-      while (saving) await new Promise((resolve) => setTimeout(resolve, 40));
+      if (!(await flush())) {
+        error = saveError || "Unable to save the Script before moving it to Trash.";
+        deleteTarget = null;
+        return;
+      }
     }
     try {
       await request("/pads/" + id, { method: "DELETE" });
+      trash = await request("/trash");
       pads = pads.filter((p) => p.id !== id);
       if (active?.id === id) {
         active = null;
@@ -326,6 +348,30 @@
       error = (e as Error).message;
       deleteTarget = null;
     }
+  }
+  async function restore(pad: TrashedPad) {
+    try {
+      const restored: Pad = await request("/trash/" + pad.id + "/restore", {method:"POST"});
+      trash = trash.filter((p) => p.id !== pad.id);
+      trashSelection = trashSelection.filter((id) => id !== pad.id);
+      pads = [restored, ...pads];
+      error = "";
+    } catch (e) { error = (e as Error).message; }
+  }
+  function toggleTrashSelection(id: string) {
+    trashSelection = trashSelection.includes(id) ? trashSelection.filter((item) => item !== id) : [...trashSelection, id];
+  }
+  async function deletePermanently() {
+    if (!permanentDelete) return;
+    const selection = permanentDelete;
+    try {
+      if (selection === "all") await request("/trash", {method:"DELETE"});
+      else await request("/trash/delete", {method:"POST", body:JSON.stringify({ids:selection})});
+      trash = selection === "all" ? [] : trash.filter((p) => !selection.includes(p.id));
+      trashSelection = [];
+      permanentDelete = null;
+      error = "";
+    } catch (e) { error = (e as Error).message; permanentDelete = null; }
   }
   function download() {
     if (!active) return;
@@ -527,6 +573,8 @@
           ><Pin size={16} /> Pinned
           <span>{pads.filter((p) => p.pinned).length}</span></button
         >
+        <button class:chosen={filter === "trash" && !active} onclick={() => showFilter("trash")}
+          ><Trash2 size={16} /> Trash <span>{trash.length}</span></button>
       </nav>
       <div class="script-list">
         {#each [...pads].sort((a, b) => +new Date(b.updated_at) - +new Date(a.updated_at)) as pad (pad.id)}
@@ -733,11 +781,33 @@
     {:else}
       <div class="dashboard">
         <div class="dashboard-heading">
-          <h1>{filter === "pinned" ? "Pinned" : "Scripts"}</h1>
-          <button class="primary" onclick={create} disabled={creating}
+          <h1>{filter === "trash" ? "Trash" : filter === "pinned" ? "Pinned" : "Scripts"}</h1>
+          {#if filter !== "trash"}<button class="primary" onclick={create} disabled={creating}
             ><Plus size={16} /> New Script</button
-          >
+          >{:else if trash.length}<button class="text-button" onclick={() => (permanentDelete = "all")}>Permanently Delete All</button>{/if}
         </div>
+        {#if filter === "trash"}
+          {#if error}<div class="error-banner" role="alert">{error} <button onclick={load}>Retry</button></div>{/if}
+          {#if loading}<div class="empty">Loading…</div>
+          {:else if !trashAvailable}<div class="empty"><p>Trash is unavailable. Restart the API server to enable it.</p></div>
+          {:else if !trash.length}<div class="empty"><p>Trash is empty</p></div>
+          {:else}
+            <div class="trash-toolbar">
+              <span>{trashSelection.length ? trashSelection.length + " selected" : "Select Scripts to permanently delete"}</span>
+              {#if trashSelection.length}<button class="primary" onclick={() => (permanentDelete = [...trashSelection])}>Permanently Delete Selected</button>{/if}
+            </div>
+            <div class="trash-list">
+              {#each trash as pad (pad.id)}
+                <div class="trash-row">
+                  <button class="trash-select" class:selected={trashSelection.includes(pad.id)} aria-pressed={trashSelection.includes(pad.id)} aria-label={"Select " + pad.title} onclick={() => toggleTrashSelection(pad.id)}>{#if trashSelection.includes(pad.id)}<Check size={15} />{/if}</button>
+                  <div class="trash-details"><strong>{pad.title}</strong><span>Deleted {date(pad.deleted_at)}</span></div>
+                  <button class="text-button" onclick={() => restore(pad)}>Restore</button>
+                  <button class="text-button" onclick={() => (permanentDelete = [pad.id])}>Permanently Delete</button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        {:else}
         <div class="library-toolbar">
           <label class="search-box"
             ><Search size={16} /><input
@@ -847,6 +917,7 @@
               </section>{/if}
           {/each}
         {/if}
+        {/if}
       </div>
     {/if}
   </main>
@@ -864,13 +935,21 @@
       onclick={() => (deleteTarget = null)}
       aria-label="Close dialog"><X size={18} /></button
     >
-    <h2>Delete Script?</h2>
-    <p>“{deleteTarget.title}” will be permanently deleted.</p>
+    <h2>Move to Trash?</h2>
+    <p>“{deleteTarget.title}” will be moved to Trash.</p>
     <div class="modal-actions">
       <button class="text-button" onclick={() => (deleteTarget = null)}
         >Cancel</button
-      ><button class="primary" onclick={remove}>Delete</button>
+      ><button class="primary" onclick={remove}>Move to Trash</button>
     </div>
+  </dialog>
+{/if}
+{#if permanentDelete}
+  <dialog use:openDialog={() => (permanentDelete = null)} class="modal" oncancel={() => (permanentDelete = null)} aria-modal="true" aria-label="Permanently Delete Scripts">
+    <button class="modal-close icon" onclick={() => (permanentDelete = null)} aria-label="Close dialog"><X size={18} /></button>
+    <h2>Permanently Delete?</h2>
+    <p>{permanentDelete === "all" ? "All Scripts in Trash" : permanentDelete.length === 1 ? "This Script" : `${permanentDelete.length} Scripts`} will be permanently deleted. This cannot be undone.</p>
+    <div class="modal-actions"><button class="text-button" onclick={() => (permanentDelete = null)}>Cancel</button><button class="primary" onclick={deletePermanently}>Permanently Delete</button></div>
   </dialog>
 {/if}
 {#if shortcutsOpen}

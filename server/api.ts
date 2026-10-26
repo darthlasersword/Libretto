@@ -15,6 +15,21 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
     if (req.method==='GET') return json(store.list());
     if (req.method==='POST') return json(await store.create(),201);
    }
+   if (url.pathname==='/api/trash') {
+    if (req.method==='GET') return json(store.listTrash());
+    if (req.method==='DELETE') { await store.emptyTrash(); return new Response(null,{status:204}); }
+   }
+   if (url.pathname==='/api/trash/delete' && req.method==='POST') {
+    const body=await req.json();
+    if (!body || !Array.isArray(body.ids) || !body.ids.length || body.ids.length>10000 || !body.ids.every((id:unknown)=>typeof id==='string' && uuid.test(id))) return json({error:'Invalid selection'},400);
+    await store.permanentlyDelete(body.ids);
+    return new Response(null,{status:204});
+   }
+   const restoreId=url.pathname.match(/^\/api\/trash\/([^/]+)\/restore$/)?.[1];
+   if (restoreId && uuid.test(restoreId) && req.method==='POST') {
+    const pad=await store.restore(restoreId);
+    return pad?json(pad):json({error:'Script not found in Trash'},404);
+   }
    const id=url.pathname.match(/^\/api\/pads\/([^/]+)$/)?.[1];
    if (!id || !uuid.test(id)) return json({error:'Not found'},404);
    if (req.method==='GET') { const pad=store.get(id); return pad?json(pad):json({error:'Pad not found'},404); }

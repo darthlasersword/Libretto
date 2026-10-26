@@ -15,7 +15,7 @@ Open http://127.0.0.1:4173. The first run creates an empty `data/scripts.json`. 
 
 For a built version, use `bun run build` and `bun start`, then open http://127.0.0.1:3001. Use one server process for each data file.
 
-The sidebar lists every Script. Hover a title for rename and delete controls; on a touch screen, the controls stay visible. Deletion asks for confirmation. The dashboard has preview and list views, search, sorting, and pinned Scripts. The editor supports Markdown, reading view, autosave, focus mode, and `.md` export.
+The sidebar lists every Script. Hover a title for rename and delete controls; on a touch screen, the controls stay visible. Deletion moves a Script to Trash, where it can be restored or permanently deleted individually, in a selection, or all at once. The dashboard has preview and list views, search, sorting, and pinned Scripts. The editor supports Markdown, reading view, autosave, focus mode, and `.md` export.
 
 You can change the file location with `LIBRETTO_DATA_FILE=/absolute/path/to/scripts.json`. See `.env.example`. To run checks: `bun run check`, `bun test`, `bun run build`.
 

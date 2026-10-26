@@ -70,3 +70,26 @@ test('Previous JSON shape upgrades without losing a Script',async()=>{
  expect(JSON.parse(await readFile(previous,'utf8')).scripts[0].id).toBe(existing.id);
  await store.delete(existing.id);
 });
+test('Trash persists, restores Scripts, and permanently deletes selected or all',async()=>{
+ const trashFile=join(dir,'trash.json');
+ const trashStore=await JsonPadStore.open(trashFile);
+ const trashApi=createApi(trashStore);
+ const req=(path:string,method='GET',body?:unknown)=>trashApi(new Request('http://localhost:3001/api'+path,{method,headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)}));
+ const first=await (await req('/pads','POST')).json();
+ const second=await (await req('/pads','POST')).json();
+ expect((await req('/pads/'+first.id,'DELETE')).status).toBe(204);
+ expect((await req('/pads/'+second.id,'DELETE')).status).toBe(204);
+ expect((await req('/pads/'+first.id)).status).toBe(404);
+ expect((await (await req('/trash')).json()).map((p:any)=>p.id).sort()).toEqual([first.id,second.id].sort());
+ expect((await JsonPadStore.open(trashFile)).listTrash()).toHaveLength(2);
+ const restored=await req('/trash/'+first.id+'/restore','POST');
+ expect(restored.status).toBe(200);
+ expect((await restored.json()).id).toBe(first.id);
+ expect((await req('/trash/'+first.id+'/restore','POST')).status).toBe(404);
+ expect((await req('/trash/delete','POST',{ids:[second.id]})).status).toBe(204);
+ expect((await (await req('/trash')).json())).toEqual([]);
+ await req('/pads/'+first.id,'DELETE');
+ expect((await req('/trash','DELETE')).status).toBe(204);
+ expect((await JsonPadStore.open(trashFile)).listTrash()).toEqual([]);
+ expect((await req('/trash/delete','POST',{ids:['bad']})).status).toBe(400);
+});

@@ -1,8 +1,8 @@
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import type { Pad } from '../src/lib/types';
+import type { Pad, TrashedPad } from '../src/lib/types';
 
-type DataFile = { version: 1; scripts: Pad[] };
+type DataFile = { version: 1; scripts: Pad[]; trash: TrashedPad[] };
 const isPad = (item: unknown): item is Pad => {
  if (!item || typeof item !== 'object') return false;
  const p = item as Record<string, unknown>;
@@ -15,7 +15,7 @@ const clone = <T>(value: T): T => structuredClone(value);
 
 export class JsonPadStore {
  readonly path: string;
- private data: DataFile = { version: 1, scripts: [] };
+ private data: DataFile = { version: 1, scripts: [], trash: [] };
  private pending: Promise<void> = Promise.resolve();
  private constructor(path: string) { this.path = resolve(path); }
 
@@ -25,14 +25,14 @@ export class JsonPadStore {
    const parsed: unknown = JSON.parse(await readFile(store.path, 'utf8'));
    const file = parsed as Partial<DataFile> & { pads?: unknown };
    const scripts = Array.isArray(file?.scripts) ? file.scripts : file?.pads;
-   if (!file || file.version !== 1 || !Array.isArray(scripts) || !scripts.every(isPad)) {
+   if (!file || file.version !== 1 || !Array.isArray(scripts) || !scripts.every(isPad) || (file.trash !== undefined && (!Array.isArray(file.trash) || !file.trash.every((p: unknown) => isPad(p) && typeof (p as TrashedPad).deleted_at === 'string')))) {
     throw new Error(`Invalid Libretto data file: ${store.path}. Your file was left untouched.`);
    }
-   store.data = {version: 1, scripts};
-   if (!Array.isArray(file.scripts)) await store.persist(store.data);
+   store.data = {version: 1, scripts, trash: file.trash ?? []};
+   if (!Array.isArray(file.scripts) || !Array.isArray(file.trash)) await store.persist(store.data);
   } catch (error) {
    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-   const first: DataFile = { version: 1, scripts: [] };
+   const first: DataFile = { version: 1, scripts: [], trash: [] };
    await store.persist(first);
    store.data = first;
   }
@@ -41,6 +41,9 @@ export class JsonPadStore {
 
  list(): Pad[] {
   return clone([...this.data.scripts].sort((a,b) => b.updated_at.localeCompare(a.updated_at) || a.id.localeCompare(b.id)));
+ }
+ listTrash(): TrashedPad[] {
+  return clone([...this.data.trash].sort((a,b) => b.deleted_at.localeCompare(a.deleted_at) || a.id.localeCompare(b.id)));
  }
  get(id: string): Pad | undefined {
   const pad = this.data.scripts.find(p => p.id === id);
@@ -71,8 +74,33 @@ export class JsonPadStore {
   return this.mutate(data => {
    const index = data.scripts.findIndex(p => p.id === id);
    if (index === -1) return {changed:false,result:false};
-   data.scripts.splice(index,1);
+   const [pad] = data.scripts.splice(index,1);
+   data.trash.push({...pad,deleted_at:new Date().toISOString()});
    return {changed:true,result:true};
+  });
+ }
+ async restore(id:string):Promise<Pad|undefined> {
+  return this.mutate(data => {
+   const index=data.trash.findIndex(p=>p.id===id);
+   if(index===-1) return {changed:false,result:undefined};
+   const {deleted_at:_,...pad}=data.trash.splice(index,1)[0];
+   data.scripts.push(pad);
+   return {changed:true,result:clone(pad)};
+  });
+ }
+ async permanentlyDelete(ids:string[]):Promise<number> {
+  return this.mutate(data => {
+   const selected=new Set(ids);
+   const before=data.trash.length;
+   data.trash=data.trash.filter(p=>!selected.has(p.id));
+   return {changed:before!==data.trash.length,result:before-data.trash.length};
+  });
+ }
+ async emptyTrash():Promise<number> {
+  return this.mutate(data => {
+   const count=data.trash.length;
+   data.trash=[];
+   return {changed:count>0,result:count};
   });
  }
  private async mutate<T>(modify:(draft:DataFile)=>{changed:boolean;result:T}):Promise<T> {
