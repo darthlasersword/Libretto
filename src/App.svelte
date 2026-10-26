@@ -56,7 +56,20 @@
     sidebar = true,
     menu = false,
     creating = false;
-  let sort: "updated" | "title" = "updated";
+  type SortOrder = "updated" | "updated-oldest" | "title" | "title-desc" | "created" | "created-oldest" | "opened";
+  const sortOptions: { value: SortOrder; label: string }[] = [
+    { value: "updated", label: "Last edited" },
+    { value: "updated-oldest", label: "Oldest edit" },
+    { value: "opened", label: "Recently opened" },
+    { value: "created", label: "Newest created" },
+    { value: "created-oldest", label: "Oldest created" },
+    { value: "title", label: "Title A–Z" },
+    { value: "title-desc", label: "Title Z–A" },
+  ];
+  let sort: SortOrder = "updated";
+  let sortMenu = false;
+  let sortAnchor: HTMLDivElement;
+  let recentIds: string[] = [];
   let editor: Editor;
   let timer: ReturnType<typeof setTimeout>;
   let generation = 0;
@@ -81,7 +94,7 @@
   const draftKey = "rune-draft-v1";
   type SavedState = {
     activeId: string | null; theme: "dark" | "light"; layout: "grid" | "list";
-    filter: "all" | "pinned" | "trash"; sort: "updated" | "title";
+    filter: "all" | "pinned" | "trash"; sort: SortOrder; recentIds: string[];
     query: string; sidebar: boolean; reading: boolean; focus: boolean;
     selectedId: string | null;
   };
@@ -92,7 +105,7 @@
   $: if (stateReady) {
     const state: SavedState = {
       activeId: active?.id ?? null, theme: dark ? "dark" : "light", layout,
-      filter, sort, query, sidebar, reading, focus, selectedId,
+      filter, sort, recentIds, query, sidebar, reading, focus, selectedId,
     };
     try { localStorage.setItem(stateKey, JSON.stringify(state)); } catch {}
   }
@@ -106,7 +119,7 @@
     { name: "Library", items: [
       ["All files", "Ctrl/⌘ + 1"], ["Pinned files", "Ctrl/⌘ + 2"],
       ["Select previous / next", "Alt + ↑ / ↓"], ["Open selected", "Enter"],
-      ["Grid / list view", "Ctrl/⌘ + Shift + L"], ["Change sort", "Ctrl/⌘ + Shift + S"],
+      ["Grid / list view", "Ctrl/⌘ + Shift + L"], ["Open sort menu", "Ctrl/⌘ + Shift + S"],
     ] },
     { name: "File", items: [
       ["Rename", "Ctrl/⌘ + Shift + R"], ["Pin / unpin", "Ctrl/⌘ + Shift + P"],
@@ -119,17 +132,30 @@
       ["Insert link", "Ctrl/⌘ + Shift + U"],
     ] },
   ];
+  function comparePads(a: Pad, b: Pad, order: SortOrder, recent: string[]): number {
+    const edited = +new Date(b.updated_at) - +new Date(a.updated_at);
+    switch (order) {
+      case "updated-oldest": return -edited || a.title.localeCompare(b.title);
+      case "opened": {
+        const aIndex = recent.indexOf(a.id), bIndex = recent.indexOf(b.id);
+        if (aIndex !== bIndex) return aIndex < 0 ? 1 : bIndex < 0 ? -1 : aIndex - bIndex;
+        return edited || a.title.localeCompare(b.title);
+      }
+      case "created": return +new Date(b.created_at) - +new Date(a.created_at) || edited;
+      case "created-oldest": return +new Date(a.created_at) - +new Date(b.created_at) || edited;
+      case "title": return a.title.localeCompare(b.title) || edited;
+      case "title-desc": return b.title.localeCompare(a.title) || edited;
+      default: return edited || a.title.localeCompare(b.title);
+    }
+  }
+  $: sidebarPads = [...pads].sort((a, b) => comparePads(a, b, "opened", recentIds));
   $: visible = pads
     .filter(
       (p) =>
         (filter !== "pinned" || p.pinned) &&
         (p.title + " " + p.content).toLowerCase().includes(query.toLowerCase()),
     )
-    .sort((a, b) =>
-      sort === "title"
-        ? a.title.localeCompare(b.title)
-        : new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
-    );
+    .sort((a, b) => comparePads(a, b, sort, recentIds));
   $: pinned = visible.filter((p) => p.pinned);
   $: others = visible.filter((p) => !p.pinned);
   $: if (typeof document !== "undefined")
@@ -149,7 +175,8 @@
         ? "list"
         : "grid";
     filter = saved.filter === "pinned" || saved.filter === "trash" ? saved.filter : "all";
-    sort = saved.sort === "title" ? "title" : "updated";
+    sort = sortOptions.some((option) => option.value === saved.sort) ? saved.sort! : "updated";
+    recentIds = Array.isArray(saved.recentIds) ? saved.recentIds.filter((id): id is string => typeof id === "string").slice(0, 1000) : [];
     query = typeof saved.query === "string" ? saved.query : "";
     sidebar = typeof saved.sidebar === "boolean" ? saved.sidebar : innerWidth > 760;
     selectedId = typeof saved.selectedId === "string" ? saved.selectedId : null;
@@ -158,6 +185,7 @@
       const pad = pads.find((p) => p.id === saved.activeId);
       if (pad) {
         active = { ...pad };
+        if (!recentIds.includes(pad.id)) recentIds = [pad.id, ...recentIds].slice(0, 1000);
         try {
           const draft = JSON.parse(localStorage.getItem(draftKey) || "null");
           if (draft?.id === pad.id && draft.revision === pad.revision &&
@@ -278,6 +306,8 @@
   async function open(pad: Pad) {
     if (active && !(await flush())) return;
     active = { ...(pads.find((p) => p.id === pad.id) || pad) };
+    recentIds = [pad.id, ...recentIds.filter((id) => id !== pad.id)].slice(0, 1000);
+    sortMenu = false;
     dirty = false;
     saveError = "";
     reading = false;
@@ -298,6 +328,7 @@
     active = null;
     focus = false;
     filter = next;
+    sortMenu = false;
     trashSelection = [];
     if (innerWidth <= 760) sidebar = false;
   }
@@ -524,6 +555,8 @@
   function clickOutsideMenu(event: PointerEvent) {
     if (menu && menuAnchor && !menuAnchor.contains(event.target as Node))
       menu = false;
+    if (sortMenu && sortAnchor && !sortAnchor.contains(event.target as Node))
+      sortMenu = false;
   }
   function focusFromPaper(event: PointerEvent) {
     if (
@@ -572,6 +605,7 @@
       if (renameId) { event.preventDefault(); cancelRename(); return; }
       if (titleEditing) { titleInput.blur(); return; }
       if (menu) { menu = false; return; }
+      if (sortMenu) { sortMenu = false; return; }
       if (focus) { toggleFocus(); return; }
       if (active) { event.preventDefault(); back(); return; }
       if (query) { query = ""; searchInput?.blur(); }
@@ -606,7 +640,7 @@
     else if (key === "t") { event.preventDefault(); setTheme(); }
     else if (key === "k" && !active) { event.preventDefault(); query = ""; searchInput?.focus(); }
     else if (key === "l" && !active) { event.preventDefault(); setLayout(layout === "grid" ? "list" : "grid"); }
-    else if (key === "s" && !active) { event.preventDefault(); sort = sort === "updated" ? "title" : "updated"; }
+    else if (key === "s" && !active && filter !== "trash") { event.preventDefault(); sortMenu = !sortMenu; }
     else if (key === "v" && active) { event.preventDefault(); reading = !reading; }
     else if (key === "m" && active) { event.preventDefault(); menu = !menu; }
     else if (key === "e" && active) { event.preventDefault(); download(); }
@@ -679,7 +713,7 @@
           ><Trash2 size={16} /> Trash <span>{trash.length}</span></button>
       </nav>
       <div class="script-list">
-        {#each [...pads].sort((a, b) => +new Date(b.updated_at) - +new Date(a.updated_at)) as pad (pad.id)}
+        {#each sidebarPads as pad (pad.id)}
           <div class:current={active?.id === pad.id} class="script-row">
             {#if renameId === pad.id && renameSource === "sidebar"}
               <input
@@ -917,14 +951,20 @@
               >{/if}</label
           >
           <div class="view-controls">
-            <button
-              class="sort-button"
-              onclick={() => (sort = sort === "updated" ? "title" : "updated")}
-              title="Change sort"
-              ><ArrowDownWideNarrow size={15} /><span
-                >{sort === "updated" ? "Last edited" : "Title A–Z"}</span
-              ></button
-            >
+            <div class="sort-anchor" bind:this={sortAnchor}>
+              <button class="sort-button" onclick={() => (sortMenu = !sortMenu)}
+                aria-label={"Sort: " + (sortOptions.find((option) => option.value === sort)?.label || "Last edited")}
+                aria-expanded={sortMenu} aria-haspopup="menu" title="Sort files"
+                ><ArrowDownWideNarrow size={15} /><span>{sortOptions.find((option) => option.value === sort)?.label}</span></button>
+              {#if sortMenu}<div class="sort-menu" role="menu" aria-label="Sort files">
+                {#each sortOptions as option}
+                  <button role="menuitemradio" aria-checked={sort === option.value}
+                    onclick={() => { sort = option.value; sortMenu = false; }}>
+                    <span>{option.label}</span>{#if sort === option.value}<Check size={14} />{/if}
+                  </button>
+                {/each}
+              </div>{/if}
+            </div>
             <div class="segmented">
               <button
                 class:active={layout === "grid"}
