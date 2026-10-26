@@ -6,7 +6,7 @@ const scriptsFile=resolve(import.meta.dir,'../data/scripts.json');
 const previousFile=resolve(import.meta.dir,'../data/pads.json');
 let defaultFile=scriptsFile;
 try { await access(scriptsFile); } catch { try { await access(previousFile); defaultFile=previousFile; } catch { /* New library. */ } }
-const store=await JsonPadStore.open(process.env.LIBRETTO_DATA_FILE || process.env.CARETI_DATA_FILE || defaultFile);
+const store=await JsonPadStore.open(process.env.RUNE_DATA_FILE || process.env.LIBRETTO_DATA_FILE || process.env.CARETI_DATA_FILE || defaultFile);
 const devOrigins=process.env.CARETI_DEV_SERVER==='1'?new Set(['http://127.0.0.1:4173','http://localhost:4173']):new Set<string>();
 const api=createApi(store,devOrigins);
 const root=resolve(import.meta.dir,'../dist');
@@ -23,4 +23,4 @@ const server=Bun.serve({hostname:process.env.HOST||'127.0.0.1',port:Number(proce
  const index=Bun.file(resolve(root,'index.html'));
  return await index.exists()?new Response(index):new Response('Frontend not built. Run bun run dev in another terminal.',{status:503});
 }});
-console.log(`Libretto: ${server.url}`);
+console.log(`Rune: ${server.url}`);

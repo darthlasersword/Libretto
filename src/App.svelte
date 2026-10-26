@@ -71,21 +71,21 @@
   let selectedId: string | null = null;
   const shortcutGroups = [
     { name: "General", items: [
-      ["Show shortcuts", "Ctrl/⌘ + /"], ["New script", "Ctrl/⌘ + N"],
-      ["Search scripts", "Ctrl/⌘ + K"], ["Clear search", "Ctrl/⌘ + Shift + K"], ["Save script", "Ctrl/⌘ + S"],
+      ["Show shortcuts", "Ctrl/⌘ + /"], ["New file", "Ctrl/⌘ + N"],
+      ["Search files", "Ctrl/⌘ + K"], ["Clear search", "Ctrl/⌘ + Shift + K"], ["Save file", "Ctrl/⌘ + S"],
       ["Toggle sidebar", "Ctrl/⌘ + Shift + B"], ["Toggle theme", "Ctrl/⌘ + Shift + T"],
       ["Close menu or dialog", "Esc"],
     ] },
     { name: "Library", items: [
-      ["All scripts", "Ctrl/⌘ + 1"], ["Pinned scripts", "Ctrl/⌘ + 2"],
+      ["All files", "Ctrl/⌘ + 1"], ["Pinned files", "Ctrl/⌘ + 2"],
       ["Select previous / next", "Alt + ↑ / ↓"], ["Open selected", "Enter"],
       ["Grid / list view", "Ctrl/⌘ + Shift + L"], ["Change sort", "Ctrl/⌘ + Shift + S"],
     ] },
-    { name: "Script", items: [
+    { name: "File", items: [
       ["Rename", "Ctrl/⌘ + Shift + R"], ["Pin / unpin", "Ctrl/⌘ + Shift + P"],
       ["Delete", "Ctrl/⌘ + Shift + Backspace"], ["Export Markdown", "Ctrl/⌘ + Shift + E"],
-      ["Script actions", "Ctrl/⌘ + Shift + M"], ["Write / read", "Ctrl/⌘ + Shift + V"],
-      ["Focus mode", "Ctrl/⌘ + Enter"], ["Back to scripts", "Esc"],
+      ["File actions", "Ctrl/⌘ + Shift + M"], ["Write / read", "Ctrl/⌘ + Shift + V"],
+      ["Focus mode", "Ctrl/⌘ + Enter"], ["Back to files", "Esc"],
     ] },
     { name: "Editor", items: [
       ["Bold", "Ctrl/⌘ + B"], ["Italic", "Ctrl/⌘ + I"],
@@ -109,15 +109,15 @@
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   onMount(() => {
     dark =
-      (localStorage.getItem("libretto-theme") ??
+      (localStorage.getItem("rune-theme") ?? localStorage.getItem("libretto-theme") ??
         localStorage.getItem("careti-theme")) === "dark" ||
       (!(
-        localStorage.getItem("libretto-theme") ??
+        localStorage.getItem("rune-theme") ?? localStorage.getItem("libretto-theme") ??
         localStorage.getItem("careti-theme")
       ) &&
         matchMedia("(prefers-color-scheme: dark)").matches);
     layout =
-      (localStorage.getItem("libretto-layout") ??
+      (localStorage.getItem("rune-layout") ?? localStorage.getItem("libretto-layout") ??
         localStorage.getItem("careti-layout")) === "list"
         ? "list"
         : "grid";
@@ -160,11 +160,11 @@
   }
   function setTheme() {
     dark = !dark;
-    localStorage.setItem("libretto-theme", dark ? "dark" : "light");
+    localStorage.setItem("rune-theme", dark ? "dark" : "light");
   }
   function setLayout(value: "grid" | "list") {
     layout = value;
-    localStorage.setItem("libretto-layout", value);
+    localStorage.setItem("rune-layout", value);
   }
   function updateLocal() {
     if (active)
@@ -321,14 +321,14 @@
   async function remove() {
     if (!deleteTarget) return;
     if (!trashAvailable) {
-      error = "Trash is unavailable. Restart the API server before deleting Scripts.";
+      error = "Trash is unavailable. Restart the API server before deleting files.";
       deleteTarget = null;
       return;
     }
     const id = deleteTarget.id;
     if (active?.id === id) {
       if (!(await flush())) {
-        error = saveError || "Unable to save the Script before moving it to Trash.";
+        error = saveError || "Unable to save the file before moving it to Trash.";
         deleteTarget = null;
         return;
       }
@@ -373,7 +373,7 @@
       error = "";
     } catch (e) { error = (e as Error).message; permanentDelete = null; }
   }
-  function download() {
+  function downloadDraft() {
     if (!active) return;
     const url = URL.createObjectURL(
       new Blob([active.content], { type: "text/markdown;charset=utf-8" }),
@@ -385,6 +385,21 @@
     a.click();
     URL.revokeObjectURL(url);
     menu = false;
+  }
+  async function download() {
+    if (!active) return;
+    if (!(await flush())) return;
+    try {
+      const response = await fetch('/api/pads/' + active.id + '/export');
+      if (!response.ok) throw new Error('Unable to export the saved file.');
+      const url = URL.createObjectURL(await response.blob());
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (active.title.replace(/[\\/:*?"<>|]/g, '-') || 'Untitled') + '.md';
+      a.click();
+      URL.revokeObjectURL(url);
+      menu = false;
+    } catch (e) { error = (e as Error).message; }
   }
   function preview(text: string) {
     return text
@@ -556,16 +571,16 @@
           e.preventDefault();
           back();
         }}
-        aria-label="Libretto home">Libretto</a
+        aria-label="Rune home">Rune</a
       >
       <button class="sidebar-create" onclick={create} disabled={creating}
-        ><Plus size={15} /> New Script</button
+        ><Plus size={15} /> New File</button
       >
       <nav aria-label="Library">
         <button
           class:chosen={filter === "all" && !active}
           onclick={() => showFilter("all")}
-          ><FileText size={16} /> Scripts <span>{pads.length}</span></button
+          ><FileText size={16} /> Files <span>{pads.length}</span></button
         >
         <button
           class:chosen={filter === "pinned" && !active}
@@ -659,7 +674,7 @@
         <div class="writer-toolbar" inert={focus && focusWriting && !focusReveal}>
           <div class="writer-back">
             {#if !focus}<button onclick={back} class="text-button"
-                ><ArrowLeft size={16} /> Scripts</button
+                ><ArrowLeft size={16} /> Files</button
               >{/if}<span class="save-status" class:failed={!!saveError}
               >{#if saving}<LoaderCircle size={13} class="spin" /> Saving{:else if saveError}<button
                   onclick={() => save()}>Retry save</button
@@ -670,7 +685,7 @@
             {#if titleEditing}<input
                 class="toolbar-title-input"
                 bind:this={titleInput}
-                aria-label="Script title"
+                aria-label="File title"
                 maxlength="200"
                 bind:value={active.title}
                 oninput={() => changed()}
@@ -716,7 +731,7 @@
               <button
                 class="icon"
                 onclick={() => (menu = !menu)}
-                aria-label="Script actions"
+                aria-label="File actions"
                 aria-expanded={menu}><MoreHorizontal size={19} /></button
               >{#if menu}<div
                   class="dropdown"
@@ -734,14 +749,14 @@
                     onclick={() => {
                       deleteTarget = active;
                       menu = false;
-                    }}><Trash2 size={15} />Delete Script</button
+                    }}><Trash2 size={15} />Delete File</button
                   >
                 </div>{/if}
             </div>
           </div>
         </div>
         {#if saveError}<div class="error-banner">
-            {saveError} <button onclick={download}>Export draft</button>
+            {saveError} <button onclick={downloadDraft}>Export draft</button>
           </div>{/if}
         <div class="writing-scroll">
           <div class="paper" use:paperFocus>
@@ -781,9 +796,9 @@
     {:else}
       <div class="dashboard">
         <div class="dashboard-heading">
-          <h1>{filter === "trash" ? "Trash" : filter === "pinned" ? "Pinned" : "Scripts"}</h1>
+          <h1>{filter === "trash" ? "Trash" : filter === "pinned" ? "Pinned" : "Files"}</h1>
           {#if filter !== "trash"}<button class="primary" onclick={create} disabled={creating}
-            ><Plus size={16} /> New Script</button
+            ><Plus size={16} /> New File</button
           >{:else if trash.length}<button class="text-button" onclick={() => (permanentDelete = "all")}>Permanently Delete All</button>{/if}
         </div>
         {#if filter === "trash"}
@@ -793,7 +808,7 @@
           {:else if !trash.length}<div class="empty"><p>Trash is empty</p></div>
           {:else}
             <div class="trash-toolbar">
-              <span>{trashSelection.length ? trashSelection.length + " selected" : "Select Scripts to permanently delete"}</span>
+              <span>{trashSelection.length ? trashSelection.length + " selected" : "Select files to permanently delete"}</span>
               {#if trashSelection.length}<button class="primary" onclick={() => (permanentDelete = [...trashSelection])}>Permanently Delete Selected</button>{/if}
             </div>
             <div class="trash-list">
@@ -813,8 +828,8 @@
             ><Search size={16} /><input
               bind:this={searchInput}
               bind:value={query}
-              placeholder="Search scripts"
-              aria-label="Search scripts"
+              placeholder="Search files"
+              aria-label="Search files"
             />{#if query}<button
                 class="icon"
                 onclick={() => (query = "")}
@@ -854,12 +869,12 @@
               {query
                 ? "No results"
                 : filter === "pinned"
-                  ? "No pinned scripts"
-                  : "No scripts yet"}
+                  ? "No pinned files"
+                  : "No files yet"}
             </p>
             {#if !query && filter === "all"}<button
                 class="primary"
-                onclick={create}><Plus size={16} /> New Script</button
+                onclick={create}><Plus size={16} /> New File</button
               >{/if}
           </div>
         {:else}
@@ -897,7 +912,7 @@
                         class="card-rename-button icon"
                         onclick={() => beginRename(pad, "card")}
                         aria-label={"Rename " + pad.title}
-                        title="Rename Script"><Pencil size={14} /></button
+                        title="Rename File"><Pencil size={14} /></button
                       ><button
                         class="card-pin icon"
                         class:filled={pad.pinned}
@@ -909,7 +924,7 @@
                         class="card-delete icon"
                         onclick={() => (deleteTarget = pad)}
                         aria-label={"Delete " + pad.title}
-                        title="Delete Script"><Trash2 size={14} /></button
+                        title="Delete File"><Trash2 size={14} /></button
                       >
                     </div>
                   {/each}
@@ -928,7 +943,7 @@
     class="modal"
     oncancel={() => (deleteTarget = null)}
     aria-modal="true"
-    aria-label="Delete Script"
+    aria-label="Delete File"
   >
     <button
       class="modal-close icon"
@@ -945,10 +960,10 @@
   </dialog>
 {/if}
 {#if permanentDelete}
-  <dialog use:openDialog={() => (permanentDelete = null)} class="modal" oncancel={() => (permanentDelete = null)} aria-modal="true" aria-label="Permanently Delete Scripts">
+  <dialog use:openDialog={() => (permanentDelete = null)} class="modal" oncancel={() => (permanentDelete = null)} aria-modal="true" aria-label="Permanently Delete Files">
     <button class="modal-close icon" onclick={() => (permanentDelete = null)} aria-label="Close dialog"><X size={18} /></button>
     <h2>Permanently Delete?</h2>
-    <p>{permanentDelete === "all" ? "All Scripts in Trash" : permanentDelete.length === 1 ? "This Script" : `${permanentDelete.length} Scripts`} will be permanently deleted. This cannot be undone.</p>
+    <p>{permanentDelete === "all" ? "All files in Trash" : permanentDelete.length === 1 ? "This file" : `${permanentDelete.length} files`} will be permanently deleted. This cannot be undone.</p>
     <div class="modal-actions"><button class="text-button" onclick={() => (permanentDelete = null)}>Cancel</button><button class="primary" onclick={deletePermanently}>Permanently Delete</button></div>
   </dialog>
 {/if}

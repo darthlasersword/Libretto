@@ -28,9 +28,14 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
    const restoreId=url.pathname.match(/^\/api\/trash\/([^/]+)\/restore$/)?.[1];
    if (restoreId && uuid.test(restoreId) && req.method==='POST') {
     const pad=await store.restore(restoreId);
-    return pad?json(pad):json({error:'Script not found in Trash'},404);
+    return pad?json(pad):json({error:'File not found in Trash'},404);
    }
    const id=url.pathname.match(/^\/api\/pads\/([^/]+)$/)?.[1];
+   const exportId=url.pathname.match(/^\/api\/pads\/([^/]+)\/export$/)?.[1];
+   if (exportId && uuid.test(exportId) && req.method==='GET') {
+    const content=await store.export(exportId);
+    return content===undefined?json({error:'File not found'},404):new Response(content,{headers:{'content-type':'text/markdown; charset=utf-8','cache-control':'no-store'}});
+   }
    if (!id || !uuid.test(id)) return json({error:'Not found'},404);
    if (req.method==='GET') { const pad=store.get(id); return pad?json(pad):json({error:'Pad not found'},404); }
    if (req.method==='DELETE') return await store.delete(id)?new Response(null,{status:204}):json({error:'Pad not found'},404);
@@ -46,7 +51,7 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
   } catch(error) {
    if(error instanceof SyntaxError) return json({error:'Invalid JSON'},400);
    console.error('API request failed',error);
-   return json({error:'Unable to save the JSON file. Your draft is still in this window.'},503);
+   return json({error:'Unable to access the saved file. Your draft is still in this window.'},503);
   }
  };
 }

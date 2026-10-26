@@ -21,13 +21,18 @@ test('JSON persists Unicode and revisions across restart',async()=>{
  const saved=await req('/pads/'+pad.id,'PUT',{...pad,title:"Writer's pad",content,pinned:true});expect(saved.status).toBe(200);
  const updated=await saved.json();expect(updated.revision).toBe(2);expect(updated.pinned).toBe(true);
  const raw=JSON.parse(await readFile(file,'utf8'));
- expect(raw.version).toBe(1);
- expect(raw.scripts.find((p:any)=>p.id===pad.id).content).toBe(content);
+ expect(raw.version).toBe(3);
+ expect(raw.scripts.find((p:any)=>p.id===pad.id).content).toBeUndefined();
+ expect(await readFile(join(dir,'saves',"Writer's pad.md"),'utf8')).toBe(content);
+ expect(await (await req('/pads/'+pad.id+'/export')).text()).toBe(content);
  expect((await JsonPadStore.open(file)).get(pad.id)?.content).toBe(content);
  expect((await req('/pads/'+pad.id,'PUT',{...pad,content:'stale'})).status).toBe(409);
  expect((await (await req('/pads')).json()).some((p:any)=>p.id===pad.id)).toBe(true);
  expect((await req('/pads/'+pad.id,'DELETE')).status).toBe(204);
+ expect((await readdir(join(dir,'saves'))).includes("Writer's pad.md")).toBe(false);
+ expect(await readFile(join(dir,'trash',"Writer's pad.md"),'utf8')).toBe(content);
  expect((await JsonPadStore.open(file)).get(pad.id)).toBeUndefined();
+ expect((await req('/pads/'+pad.id+'/export')).status).toBe(404);
  expect((await readdir(dir)).filter(n=>n.endsWith('.tmp'))).toEqual([]);
 });
 test('Simultaneous saves serialize; only one stale revision commits',async()=>{
@@ -36,6 +41,20 @@ test('Simultaneous saves serialize; only one stale revision commits',async()=>{
  expect([a.status,b.status].sort()).toEqual([200,409]);
  expect((await (await req('/pads/'+pad.id)).json()).revision).toBe(2);
  await req('/pads/'+pad.id,'DELETE');
+});
+test('Titles name active files, collisions get suffixes, and Trash moves content',async()=>{
+ const a=await store.create();const b=await store.create();
+ expect((await readdir(join(dir,'saves'))).filter(n=>n.startsWith('Untitled'))).toEqual(['Untitled (2).md','Untitled.md']);
+ const renamed=await (await req('/pads/'+a.id,'PUT',{...a,title:'Notes',content:'first'})).json();
+ expect(await readFile(join(dir,'saves','Notes.md'),'utf8')).toBe('first');
+ expect((await readdir(join(dir,'saves'))).includes('Untitled.md')).toBe(false);
+ await req('/pads/'+a.id,'DELETE');
+ expect((await readdir(join(dir,'saves'))).includes('Notes.md')).toBe(false);
+ expect(await readFile(join(dir,'trash','Notes.md'),'utf8')).toBe('first');
+ await req('/trash/'+a.id+'/restore','POST');
+ expect(await readFile(join(dir,'saves','Notes.md'),'utf8')).toBe('first');
+ expect((await readdir(join(dir,'trash'))).includes('Notes.md')).toBe(false);
+ await req('/pads/'+renamed.id,'DELETE');await req('/pads/'+b.id,'DELETE');
 });
 test('Reject invalid input, malformed JSON, and cross-origin writes',async()=>{
  const pad=await (await req('/pads','POST')).json();
@@ -61,16 +80,17 @@ test('Empty database stays empty; corrupt JSON is never overwritten',async()=>{
  await expect(JsonPadStore.open(bad)).rejects.toThrow();
  expect(await readFile(bad,'utf8')).toBe('{ broken data');
 });
-test('Previous JSON shape upgrades without losing a Script',async()=>{
+test('Previous JSON shape upgrades without losing a file',async()=>{
  const previous=join(dir,'previous.json');
  const existing=await store.create();
  await writeFile(previous,JSON.stringify({version:1,pads:[existing]}));
  const loaded=await JsonPadStore.open(previous);
  expect(loaded.get(existing.id)?.title).toBe(existing.title);
- expect(JSON.parse(await readFile(previous,'utf8')).scripts[0].id).toBe(existing.id);
+ expect(JSON.parse(await readFile(previous,'utf8')).scripts[0].content).toBeUndefined();
+ expect(await readFile(join(dir,'saves','Untitled.md'),'utf8')).toBe(existing.content);
  await store.delete(existing.id);
 });
-test('Trash persists, restores Scripts, and permanently deletes selected or all',async()=>{
+test('Trash persists, restores files, and permanently deletes selected or all',async()=>{
  const trashFile=join(dir,'trash.json');
  const trashStore=await JsonPadStore.open(trashFile);
  const trashApi=createApi(trashStore);
@@ -86,7 +106,9 @@ test('Trash persists, restores Scripts, and permanently deletes selected or all'
  expect(restored.status).toBe(200);
  expect((await restored.json()).id).toBe(first.id);
  expect((await req('/trash/'+first.id+'/restore','POST')).status).toBe(404);
+ const secondName=JSON.parse(await readFile(trashFile,'utf8')).trash.find((p:any)=>p.id===second.id).filename;
  expect((await req('/trash/delete','POST',{ids:[second.id]})).status).toBe(204);
+ expect((await readdir(join(dir,'trash'))).includes(secondName)).toBe(false);
  expect((await (await req('/trash')).json())).toEqual([]);
  await req('/pads/'+first.id,'DELETE');
  expect((await req('/trash','DELETE')).status).toBe(204);
