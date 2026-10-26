@@ -1,4 +1,4 @@
-# Libretto
+# Rune
 
 A local Markdown editor built with Svelte, CodeMirror, and Bun.
 
