@@ -43,7 +43,7 @@
   let query = "",
     filter: "all" | "pinned" | "trash" = "all",
     layout: "grid" | "list" = "grid";
-  let dark = false,
+  let dark = true,
     reading = false,
     focus = false,
     focusWriting = false,
@@ -111,11 +111,10 @@
     dark =
       (localStorage.getItem("rune-theme") ?? localStorage.getItem("libretto-theme") ??
         localStorage.getItem("careti-theme")) === "dark" ||
-      (!(
+      !(
         localStorage.getItem("rune-theme") ?? localStorage.getItem("libretto-theme") ??
         localStorage.getItem("careti-theme")
-      ) &&
-        matchMedia("(prefers-color-scheme: dark)").matches);
+      );
     layout =
       (localStorage.getItem("rune-layout") ?? localStorage.getItem("libretto-layout") ??
         localStorage.getItem("careti-layout")) === "list"
