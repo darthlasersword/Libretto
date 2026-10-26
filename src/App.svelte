@@ -25,6 +25,8 @@
     ArrowDownWideNarrow,
     LoaderCircle,
     Keyboard,
+    Eye,
+    RotateCcw,
   } from "lucide-svelte";
   import Editor from "./lib/Editor.svelte";
   import { renderMarkdown } from "./lib/markdown";
@@ -34,6 +36,7 @@
   let trashAvailable = true;
   let trashSelection: string[] = [];
   let permanentDelete: string[] | "all" | null = null;
+  let trashPreview: TrashedPad | null = null;
   let active: Pad | null = null;
   let loading = true,
     error = "",
@@ -69,6 +72,26 @@
   let deleteTarget: Pad | null = null;
   let shortcutsOpen = false;
   let selectedId: string | null = null;
+  let stateReady = false;
+  const stateKey = "rune-state-v1";
+  const draftKey = "rune-draft-v1";
+  type SavedState = {
+    activeId: string | null; theme: "dark" | "light"; layout: "grid" | "list";
+    filter: "all" | "pinned" | "trash"; sort: "updated" | "title";
+    query: string; sidebar: boolean; reading: boolean; focus: boolean;
+    selectedId: string | null;
+  };
+  function readState(): Partial<SavedState> {
+    try { return JSON.parse(localStorage.getItem(stateKey) || "{}") || {}; }
+    catch { return {}; }
+  }
+  $: if (stateReady) {
+    const state: SavedState = {
+      activeId: active?.id ?? null, theme: dark ? "dark" : "light", layout,
+      filter, sort, query, sidebar, reading, focus, selectedId,
+    };
+    try { localStorage.setItem(stateKey, JSON.stringify(state)); } catch {}
+  }
   const shortcutGroups = [
     { name: "General", items: [
       ["Show shortcuts", "Ctrl/⌘ + /"], ["New file", "Ctrl/⌘ + N"],
@@ -108,20 +131,45 @@
   $: if (typeof document !== "undefined")
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   onMount(() => {
-    dark =
+    const saved = readState();
+    dark = saved.theme === "dark" || (saved.theme !== "light" && (
       (localStorage.getItem("rune-theme") ?? localStorage.getItem("libretto-theme") ??
         localStorage.getItem("careti-theme")) === "dark" ||
       !(
         localStorage.getItem("rune-theme") ?? localStorage.getItem("libretto-theme") ??
         localStorage.getItem("careti-theme")
-      );
+      )));
     layout =
-      (localStorage.getItem("rune-layout") ?? localStorage.getItem("libretto-layout") ??
+      (saved.layout ?? localStorage.getItem("rune-layout") ?? localStorage.getItem("libretto-layout") ??
         localStorage.getItem("careti-layout")) === "list"
         ? "list"
         : "grid";
-    sidebar = innerWidth > 760;
-    load();
+    filter = saved.filter === "pinned" || saved.filter === "trash" ? saved.filter : "all";
+    sort = saved.sort === "title" ? "title" : "updated";
+    query = typeof saved.query === "string" ? saved.query : "";
+    sidebar = typeof saved.sidebar === "boolean" ? saved.sidebar : innerWidth > 760;
+    selectedId = typeof saved.selectedId === "string" ? saved.selectedId : null;
+    load().then(() => {
+      if (error && !pads.length) return;
+      const pad = pads.find((p) => p.id === saved.activeId);
+      if (pad) {
+        active = { ...pad };
+        try {
+          const draft = JSON.parse(localStorage.getItem(draftKey) || "null");
+          if (draft?.id === pad.id && draft.revision === pad.revision &&
+              typeof draft.title === "string" && typeof draft.content === "string") {
+            active.title = draft.title;
+            active.content = draft.content;
+            dirty = active.title !== pad.title || active.content !== pad.content;
+            if (dirty) { updateLocal(); timer = setTimeout(() => save(), 650); }
+          }
+        } catch {}
+        reading = saved.reading === true;
+        focus = saved.focus === true;
+      }
+      if (selectedId && !pads.some((p) => p.id === selectedId)) selectedId = null;
+      stateReady = true;
+    });
     return () => clearTimeout(timer);
   });
   async function request(path: string, options: RequestInit = {}) {
@@ -178,6 +226,7 @@
     generation++;
     dirty = true;
     saveError = "";
+    try { localStorage.setItem(draftKey, JSON.stringify({ id: active.id, revision: active.revision, title: active.title, content: active.content })); } catch {}
     updateLocal();
     clearTimeout(timer);
     timer = setTimeout(() => save(), 650);
@@ -203,6 +252,10 @@
         };
         dirty = generation !== gen;
         updateLocal();
+        if (!dirty) localStorage.removeItem(draftKey);
+        else try { localStorage.setItem(draftKey, JSON.stringify({
+          id: active.id, revision: active.revision, title: active.title, content: active.content,
+        })); } catch {}
       }
       return !dirty;
     } catch (e) {
@@ -354,6 +407,7 @@
       trash = trash.filter((p) => p.id !== pad.id);
       trashSelection = trashSelection.filter((id) => id !== pad.id);
       pads = [restored, ...pads];
+      if (trashPreview?.id === pad.id) trashPreview = null;
       error = "";
     } catch (e) { error = (e as Error).message; }
   }
@@ -367,6 +421,7 @@
       if (selection === "all") await request("/trash", {method:"DELETE"});
       else await request("/trash/delete", {method:"POST", body:JSON.stringify({ids:selection})});
       trash = selection === "all" ? [] : trash.filter((p) => !selection.includes(p.id));
+      if (trashPreview && (selection === "all" || selection.includes(trashPreview.id))) trashPreview = null;
       trashSelection = [];
       permanentDelete = null;
       error = "";
@@ -570,7 +625,7 @@
           e.preventDefault();
           back();
         }}
-        aria-label="Rune home">Rune</a
+        aria-label="Rune home"><img class="brand-icon" src="/valknut.svg" alt="" />Rune</a
       >
       <button class="sidebar-create" onclick={create} disabled={creating}
         ><Plus size={15} /> New File</button
@@ -798,7 +853,8 @@
           <h1>{filter === "trash" ? "Trash" : filter === "pinned" ? "Pinned" : "Files"}</h1>
           {#if filter !== "trash"}<button class="primary" onclick={create} disabled={creating}
             ><Plus size={16} /> New File</button
-          >{:else if trash.length}<button class="text-button" onclick={() => (permanentDelete = "all")}>Permanently Delete All</button>{/if}
+          >{:else if trash.length}<button class="trash-bulk icon" onclick={() => (permanentDelete = "all")}
+            aria-label="Permanently delete all files" title="Permanently delete all files"><Trash2 size={18} /></button>{/if}
         </div>
         {#if filter === "trash"}
           {#if error}<div class="error-banner" role="alert">{error} <button onclick={load}>Retry</button></div>{/if}
@@ -807,16 +863,22 @@
           {:else if !trash.length}<div class="empty"><p>Trash is empty</p></div>
           {:else}
             <div class="trash-toolbar">
-              <span>{trashSelection.length ? trashSelection.length + " selected" : "Select files to permanently delete"}</span>
-              {#if trashSelection.length}<button class="primary" onclick={() => (permanentDelete = [...trashSelection])}>Permanently Delete Selected</button>{/if}
+              <span>{trashSelection.length ? trashSelection.length + " selected" : trash.length + (trash.length === 1 ? " file" : " files")}</span>
+              {#if trashSelection.length}<button class="trash-bulk icon" onclick={() => (permanentDelete = [...trashSelection])}
+                aria-label="Permanently delete selected files" title="Permanently delete selected files"><Trash2 size={18} /></button>{/if}
             </div>
             <div class="trash-list">
               {#each trash as pad (pad.id)}
                 <div class="trash-row">
                   <button class="trash-select" class:selected={trashSelection.includes(pad.id)} aria-pressed={trashSelection.includes(pad.id)} aria-label={"Select " + pad.title} onclick={() => toggleTrashSelection(pad.id)}>{#if trashSelection.includes(pad.id)}<Check size={15} />{/if}</button>
-                  <div class="trash-details"><strong>{pad.title}</strong><span>Deleted {date(pad.deleted_at)}</span></div>
-                  <button class="text-button" onclick={() => restore(pad)}>Restore</button>
-                  <button class="text-button" onclick={() => (permanentDelete = [pad.id])}>Permanently Delete</button>
+                  <button class="trash-details" onclick={() => (trashPreview = pad)} title={"Preview " + pad.title}>
+                    <strong>{pad.title || "Untitled"}</strong><span>Deleted {date(pad.deleted_at)} · {wordCount(pad.content)} words</span>
+                  </button>
+                  <div class="trash-actions">
+                    <button class="icon" onclick={() => (trashPreview = pad)} aria-label={"Preview " + pad.title} title="Preview"><Eye size={17} /></button>
+                    <button class="icon" onclick={() => restore(pad)} aria-label={"Restore " + pad.title} title="Restore"><RotateCcw size={17} /></button>
+                    <button class="icon" onclick={() => (permanentDelete = [pad.id])} aria-label={"Permanently delete " + pad.title} title="Permanently delete"><Trash2 size={17} /></button>
+                  </div>
                 </div>
               {/each}
             </div>
@@ -956,6 +1018,15 @@
         >Cancel</button
       ><button class="primary" onclick={remove}>Move to Trash</button>
     </div>
+  </dialog>
+{/if}
+{#if trashPreview}
+  <dialog use:openDialog={() => (trashPreview = null)} class="modal trash-preview-modal" oncancel={() => (trashPreview = null)} aria-modal="true" aria-label={"Preview " + trashPreview.title}>
+    <button class="modal-close icon" onclick={() => (trashPreview = null)} aria-label="Close preview"><X size={18} /></button>
+    <h2>{trashPreview.title || "Untitled"}</h2>
+    <p>Deleted {date(trashPreview.deleted_at)} · {wordCount(trashPreview.content)} words</p>
+    <div class="trash-preview-content"><article class="markdown" use:renderMarkdown={trashPreview.content}></article></div>
+    <div class="modal-actions"><button class="text-button" onclick={() => (trashPreview = null)}>Close</button><button class="primary" onclick={() => restore(trashPreview!)}><RotateCcw size={15} /> Restore</button></div>
   </dialog>
 {/if}
 {#if permanentDelete}
