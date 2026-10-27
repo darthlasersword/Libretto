@@ -1,7 +1,7 @@
 import type { JsonPadStore } from './json-store';
 const json = (data:unknown, status=200) => Response.json(data,{status});
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string>=new Set()) {
+export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string>=new Set(), setup?: { status: () => { required: boolean; path: string }; configure: (path: string) => Promise<JsonPadStore>; chooseFolder?: () => Promise<string | null> }) {
  return async function api(req:Request):Promise<Response> {
   const url = new URL(req.url);
   if (!url.pathname.startsWith('/api/')) return json({error:'Not found'},404);
@@ -10,6 +10,22 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
    if (origin && origin !== url.origin && !allowedOrigins.has(origin)) return json({error:'Origin rejected'},403);
   }
   try {
+   if (url.pathname==='/api/setup/browse' && req.method==='POST' && setup?.chooseFolder) {
+    if (!setup.status().required) return json({error:'Storage is already set up.'},409);
+    try { return json({path: await setup.chooseFolder()}); }
+    catch (error) { return json({error: error instanceof Error ? error.message : 'Unable to open the folder chooser.'},503); }
+   }
+   if (url.pathname==='/api/setup' && setup) {
+    if (req.method==='GET') return json(setup.status());
+    if (req.method==='POST') {
+     const body=await req.json();
+     if (!body || typeof body.path !== 'string' || !body.path.trim()) return json({error:'Enter an absolute folder path.'},400);
+     if (!setup.status().required) return json({error:'Storage is already set up.'},409);
+     try { store=await setup.configure(body.path.trim()); return json(setup.status()); }
+     catch (error) { return json({error: error instanceof Error ? error.message : 'Unable to use this folder.'},400); }
+    }
+   }
+   if (setup?.status().required && url.pathname !== '/api/health') return json({error:'Choose a storage folder to get started.'},409);
    if (url.pathname==='/api/health' && req.method==='GET') return json({database:'json',ok:true});
    if (url.pathname==='/api/backup') {
     if (req.method==='GET') return new Response(JSON.stringify(await store.backup()),{headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});

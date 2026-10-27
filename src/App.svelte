@@ -86,6 +86,11 @@
   let shortcutsOpen = false;
   let selectedId: string | null = null;
   let readModes: Record<string, boolean> = {};
+  let setupRequired = false;
+  let storagePath = "";
+  let setupError = "";
+  let setupBusy = false;
+  let browsingFolder = false;
   let backupOpen = false;
   let backupBusy = false;
   let notice = "";
@@ -184,7 +189,7 @@
     readModes = saved.readModes && typeof saved.readModes === "object" && !Array.isArray(saved.readModes)
       ? Object.fromEntries(Object.entries(saved.readModes).filter(([, value]) => typeof value === "boolean"))
       : {};
-    load().then(() => {
+    initialize().then(() => {
       if (error && !pads.length) return;
       const pad = pads.find((p) => p.id === saved.activeId);
       if (pad) {
@@ -222,6 +227,35 @@
       throw new Error(message);
     }
     return response.status === 204 ? null : response.json();
+  }
+  async function initialize() {
+    try {
+      const setup = await request("/setup");
+      storagePath = setup.path;
+      setupRequired = setup.required;
+      if (setupRequired) { loading = false; return; }
+      await load();
+    } catch (e) { error = (e as Error).message; loading = false; }
+  }
+  async function browseFolder() {
+    browsingFolder = true;
+    setupError = "";
+    try {
+      const result = await request("/setup/browse", { method: "POST" });
+      if (result.path) storagePath = result.path;
+    } catch (e) { setupError = (e as Error).message; }
+    finally { browsingFolder = false; }
+  }
+  async function finishSetup() {
+    setupBusy = true;
+    setupError = "";
+    try {
+      const result = await request("/setup", { method: "POST", body: JSON.stringify({path: storagePath}) });
+      storagePath = result.path;
+      setupRequired = false;
+      await load();
+    } catch (e) { setupError = (e as Error).message; }
+    finally { setupBusy = false; }
   }
   async function load() {
     loading = true;
@@ -1063,11 +1097,24 @@
   </main>
 </div>
 {#if notice}<div class="notice" role="status">{notice}<button class="icon" onclick={() => (notice = "")} aria-label="Dismiss message"><X size={14} /></button></div>{/if}
+{#if setupRequired}
+  <dialog use:openDialog={() => {}} class="modal setup-modal" oncancel={(event) => event.preventDefault()} aria-modal="true" aria-label="Choose where to save files">
+    <h2>Where would you like to save your files?</h2>
+    <p>Choose a folder on the computer running Rune. New scripts will be saved there as Markdown files.</p>
+    <form onsubmit={(event) => { event.preventDefault(); finishSetup(); }}>
+      <label for="storage-path">Folder path</label>
+      <div class="setup-path"><input id="storage-path" bind:value={storagePath} required autocomplete="off" /><button type="button" onclick={browseFolder} disabled={browsingFolder || setupBusy}>{browsingFolder ? "Opening…" : "Browse…"}</button></div>
+      <p>Use the suggested folder, browse, or enter the full path of an existing folder. Existing files are left untouched.</p>
+      {#if setupError}<p role="alert" class="setup-error">{setupError}</p>{/if}
+      <div class="modal-actions"><button class="primary" type="submit" disabled={setupBusy || browsingFolder}>Use this folder</button></div>
+    </form>
+  </dialog>
+{/if}
 {#if backupOpen}
   <dialog use:openDialog={() => (backupOpen = false)} class="modal backup-modal" oncancel={() => (backupOpen = false)} aria-modal="true" aria-label="Storage and backup">
     <button class="modal-close icon" onclick={() => (backupOpen = false)} aria-label="Close backup"><X size={18} /></button>
     <h2>Storage and backup</h2>
-    <p>By default, Rune saves scripts on this device in <code>saves</code>, deleted scripts in <code>trash</code>, and file details in <code>data/scripts.json</code>. Browser preferences stay in this browser.</p>
+    <p>Scripts are saved in <code>{storagePath}</code>. Deleted scripts and file details are stored separately by Rune. Browser preferences stay in this browser.</p>
     <p>Download a backup to move your library to another device or recover from accidental edits. It includes active scripts and Trash. Restoring adds copies and keeps current files.</p>
     <div class="backup-actions">
       <button class="primary" onclick={downloadBackup} disabled={backupBusy}><Download size={16} /> Download backup</button>

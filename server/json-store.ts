@@ -26,11 +26,11 @@ export class JsonPadStore {
  private data: DataFile = { version: 3, scripts: [], trash: [] };
  private contents = new Map<string, string>();
  private pending: Promise<void> = Promise.resolve();
- private constructor(path: string) {
+ private constructor(path: string, savesPath?: string) {
   this.path = resolve(path);
   const dataDir = dirname(this.path);
   const root = basename(dataDir) === 'data' ? dirname(dataDir) : dataDir;
-  this.savesPath = join(root, 'saves');
+  this.savesPath = savesPath ? resolve(savesPath) : join(root, 'saves');
   this.trashPath = join(root, 'trash');
  }
  private activePath(p: Meta) { return join(this.savesPath, p.filename); }
@@ -54,8 +54,8 @@ export class JsonPadStore {
   const base=slug(title);
   for(let n=1;;n++){const candidate=`${base}${n===1?'':` (${n})`}.md`;if(!used.has(candidate.toLowerCase()))return candidate;}
  }
- static async open(path: string): Promise<JsonPadStore> {
-  const store = new JsonPadStore(path);
+ static async open(path: string, savesPath?: string): Promise<JsonPadStore> {
+  const store = new JsonPadStore(path, savesPath);
   let parsed: any;
   try { parsed = JSON.parse(await readFile(store.path, 'utf8')); }
   catch (error) {
