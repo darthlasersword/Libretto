@@ -28,6 +28,8 @@ flowchart LR
 | `src/lib/types.ts` | Shared `Pad` and `TrashedPad` shapes and word count. |
 | `src/style.css` | Theme variables, layout, responsive styles, and component styling. Later rules override some earlier styles. |
 | `server/index.ts` | Starts the Bun server, chooses the data file, routes `/api`, and serves `dist/` in a built app. |
+| `server/desktop.ts` / `scripts/build-desktop.ts` | Compiles the API and frontend assets into a Bun executable embedded in the Tauri Windows application. |
+| `src-tauri/src/lib.rs` | Extracts and starts the embedded server, opens the desktop window, focuses an existing instance on relaunch, and stops the server on exit. |
 | `server/api.ts` | HTTP routes, input checks, same-origin checks for writes, and error responses. |
 | `server/json-store.ts` | File naming, reads and writes, revisions, Trash, backup import/export, and old data migrations. |
 | `scripts/dev.ts` / `vite.config.ts` | Starts Bun on port 3001 and Vite on port 4173; Vite proxies `/api` to Bun. |
@@ -49,6 +51,8 @@ By default, the server writes active content to `saves/<title>.md`, deleted cont
 `RUNE_DATA_FILE` can point to a different index file. `LIBRETTO_DATA_FILE` and `CARETI_DATA_FILE` remain accepted as legacy alternatives. The `saves/` and `trash/` directories are derived from the index location. Run only one server process per data file. The data directories, `dist/`, and `node_modules/` are ignored by Git; they are not part of the repository.
 
 The browser uses `localStorage` for the current file, theme, layout, filter, search, sort choice, sidebar state, recent file order, and per-file Read/Write modes (`rune-state-v1`). It also keeps a pending draft under `rune-draft-v1` until a save succeeds. These browser settings and drafts are separate from the JSON backup. The server's files are the durable library; a backup file should be kept outside the device for device loss or migration.
+
+The Windows desktop build stores its library in `%LOCALAPPDATA%/app.rune.editor/`. It embeds a compiled Bun server and all frontend assets, extracts the server to that directory, and serves the WebView at `http://127.0.0.1:43187`. A stable origin keeps preferences and drafts available across launches. A single-instance plugin prevents concurrent desktop processes from writing the same library; closing Rune stops the child server, and closing the parent stdin pipe also causes the child to exit. Desktop builds use `bun run build:desktop`; `bun scripts/smoke-desktop.ts` checks the compiled server with an isolated temporary library.
 
 ## HTTP API
 

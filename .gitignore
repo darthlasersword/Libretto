@@ -8,3 +8,5 @@ trash/
 .pgdata/
 src-tauri/target/
 src-tauri/gen/schemas/
+src-tauri/binaries/
+server/desktop-assets.generated.ts

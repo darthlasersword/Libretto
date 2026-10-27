@@ -694,6 +694,7 @@
       onclick={() => (sidebar = false)}
     ></button>{/if}
     <aside class="sidebar" inert={!sidebar || focus} aria-hidden={!sidebar || focus}>
+      {#if !(typeof window !== "undefined" && "__RUNE_WINDOWS_DESKTOP__" in window)}
       <a
         href="/"
         class="brand"
@@ -703,6 +704,7 @@
         }}
         aria-label="Rune home"><img class="brand-icon" src="/valknut.svg" alt="" />Rune</a
       >
+      {/if}
       <button class="sidebar-create" onclick={create} disabled={creating}
         ><Plus size={15} /> New File</button
       >

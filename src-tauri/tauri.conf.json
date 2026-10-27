@@ -7,12 +7,13 @@
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:4173",
     "beforeDevCommand": "bun run dev",
-    "beforeBuildCommand": "bun run build"
+    "beforeBuildCommand": "bun scripts/build-desktop.ts"
   },
   "app": {
     "windows": [
       {
         "title": "Rune",
+        "create": false,
         "width": 800,
         "height": 600,
         "resizable": true,
@@ -25,7 +26,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
