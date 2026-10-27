@@ -1,7 +1,7 @@
 import type { JsonPadStore } from './json-store';
 const json = (data:unknown, status=200) => Response.json(data,{status});
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string>=new Set(), setup?: { status: () => { required: boolean; path: string }; configure: (path: string) => Promise<JsonPadStore>; chooseFolder?: () => Promise<string | null> }) {
+export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string>=new Set(), setup?: { status: () => { required: boolean; path: string }; configure: (path: string) => Promise<JsonPadStore>; chooseFolder?: () => Promise<string | null>; reset?: () => Promise<void> }) {
  return async function api(req:Request):Promise<Response> {
   const url = new URL(req.url);
   if (!url.pathname.startsWith('/api/')) return json({error:'Not found'},404);
@@ -31,7 +31,8 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
     await store.reset();
     const backup=await store.backup();
     if (backup.scripts.length || backup.trash.length) throw new Error('Reset verification failed.');
-    return json({reset:true});
+    if (setup?.reset) await setup.reset();
+    return json({reset:true,setupRequired:setup?.status().required ?? false});
    }
    if (url.pathname==='/api/backup') {
     if (req.method==='GET') return new Response(JSON.stringify(await store.backup()),{headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});

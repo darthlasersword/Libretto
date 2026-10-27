@@ -17,10 +17,13 @@ const req=(path:string,method='GET',body?:unknown,headers:Record<string,string>=
 test('Reset removes active and trashed files and persists an empty library',async()=>{
  const resetDir=await mkdtemp(join(tmpdir(),'rune-reset-test-'));
  try {
-  const path=join(resetDir,'scripts.json');const resetStore=await JsonPadStore.open(path);const resetApi=createApi(resetStore);
+  const path=join(resetDir,'scripts.json');const resetStore=await JsonPadStore.open(path);
+  let required=false;const setup={status:()=>({required,path:resetDir}),configure:async()=>resetStore,reset:async()=>{required=true;}};
+  const resetApi=createApi(resetStore,new Set(),setup);
   const active=await resetStore.create();const deleted=await resetStore.create();await resetStore.delete(deleted.id);
   const response=await resetApi(new Request('http://localhost:3001/api/reset',{method:'POST'}));
-  expect(await response.json()).toEqual({reset:true});
+  expect(await response.json()).toEqual({reset:true,setupRequired:true});
+  expect(await (await resetApi(new Request('http://localhost:3001/api/setup'))).json()).toEqual({required:true,path:resetDir});
   expect((await JsonPadStore.open(path)).list()).toEqual([]);expect((await JsonPadStore.open(path)).listTrash()).toEqual([]);
   expect(await readdir(resetStore.savesPath)).toEqual([]);expect(await readdir(resetStore.trashPath)).toEqual([]);
   expect(resetStore.get(active.id)).toBeUndefined();

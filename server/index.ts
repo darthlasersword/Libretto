@@ -34,6 +34,11 @@ let configuring=false;
 const setup={
  chooseFolder,
  status:()=>({...config}),
+ async reset() {
+  if(configuring) throw new Error('Storage is being set up.');
+  const next={required:true,path:join(basenameForData(dirname(resolve(dataFile))),'saves')};
+  await saveConfig(next); config=next;
+ },
  async configure(path:string) {
   if(configuring || !config.required) throw new Error('Storage is already being set up.');
   configuring=true;
@@ -56,10 +61,17 @@ const setup={
 const devOrigins=process.env.CARETI_DEV_SERVER==='1'?new Set(['http://127.0.0.1:4173','http://localhost:4173']):new Set<string>();
 const api=createApi(store,devOrigins,setup);
 const root=resolve(import.meta.dir,'../dist');
-const server=Bun.serve({hostname:process.env.HOST||'127.0.0.1',port:Number(process.env.PORT||3001),maxRequestBodySize:52000000,async fetch(req){
+const server=Bun.serve({hostname:process.env.HOST||'127.0.0.1',port:Number(process.env.PORT||3001),maxRequestBodySize:52000000,async fetch(req,server){
  const url=new URL(req.url);
+ // The native folder chooser can remain open longer than Bun's idle timeout.
+ // The chooser itself has a five-minute timeout.
+ if(url.pathname==='/api/setup/browse' && req.method==='POST') server.timeout(req,0);
  if(url.pathname.startsWith('/api/')) return api(req);
  if(req.method!=='GET'&&req.method!=='HEAD') return new Response('Method not allowed',{status:405});
+ if(process.env.CARETI_DEV_SERVER==='1') {
+  url.port='4173';
+  return Response.redirect(url.toString(),302);
+ }
  let decoded:string;try{decoded=decodeURIComponent(url.pathname);}catch{return new Response('Invalid path',{status:400});}
  const path=resolve(root,'.'+decoded);
  if(path!==root&&!path.startsWith(root+sep)) return new Response('Forbidden',{status:403});

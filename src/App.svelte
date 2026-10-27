@@ -545,15 +545,15 @@
     try {
       clearTimeout(timer);
       while (saving) await new Promise((resolve) => setTimeout(resolve, 40));
-      await request("/reset", {method:"POST"});
-      const backup = await request("/backup", {cache:"no-store"});
-      if (backup.scripts.length || backup.trash.length) throw new Error("Server still contains files.");
+      const result = await request("/reset", {method:"POST"});
+      const setup = await request("/setup", {cache:"no-store"});
+      if (!result.reset || !result.setupRequired || !setup.required) throw new Error("Server reset or storage setup could not be verified.");
       active = null; pads = []; trash = []; dirty = false; saveError = "";
       selectedId = null; recentIds = []; readModes = {}; trashSelection = []; trashPreview = null;
       filter = "all"; query = ""; focus = false; reading = false;
       localStorage.removeItem(draftKey);
       resetVerified = true;
-      showNotice("Rune files and trash reset and verified.");
+      showNotice("Reset verified. Refresh to choose your storage folder.");
     } catch (e) { showNotice("Reset failed: " + (e as Error).message); }
     finally { resetBusy = false; }
   }
