@@ -93,6 +93,9 @@
   let browsingFolder = false;
   let backupOpen = false;
   let backupBusy = false;
+  let resetBusy = false;
+  let resetVerified = false;
+  $: if (pads.length || trash.length || dirty) resetVerified = false;
   let notice = "";
   let noticeTimer: ReturnType<typeof setTimeout>;
   let stateReady = false;
@@ -536,6 +539,24 @@
     } catch (e) { showNotice("Backup failed: " + (e as Error).message); }
     finally { backupBusy = false; }
   }
+  async function resetRune() {
+    if (resetBusy || resetVerified || !confirm("Permanently delete all Rune files and trash? This cannot be undone.")) return;
+    resetBusy = true;
+    try {
+      clearTimeout(timer);
+      while (saving) await new Promise((resolve) => setTimeout(resolve, 40));
+      await request("/reset", {method:"POST"});
+      const backup = await request("/backup", {cache:"no-store"});
+      if (backup.scripts.length || backup.trash.length) throw new Error("Server still contains files.");
+      active = null; pads = []; trash = []; dirty = false; saveError = "";
+      selectedId = null; recentIds = []; readModes = {}; trashSelection = []; trashPreview = null;
+      filter = "all"; query = ""; focus = false; reading = false;
+      localStorage.removeItem(draftKey);
+      resetVerified = true;
+      showNotice("Rune files and trash reset and verified.");
+    } catch (e) { showNotice("Reset failed: " + (e as Error).message); }
+    finally { resetBusy = false; }
+  }
   async function importBackup(event: Event) {
     const input = event.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
@@ -804,6 +825,7 @@
       </div>
       {#if error}<div class="sidebar-error" role="alert">{error}</div>{/if}
       <div class="sidebar-bottom">
+        <button class="icon" aria-label="Reset Rune" title={resetVerified ? "Reset verified" : "Reset Rune (permanently deletes all files)"} onclick={resetRune} disabled={resetBusy || resetVerified}><Trash2 size={16} /></button>
         <button class="shortcuts-button" onclick={() => (backupOpen = true)} title="Storage and backup"
           ><Database size={16} /> Backup</button>
         <button

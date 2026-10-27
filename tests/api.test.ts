@@ -14,6 +14,18 @@ beforeAll(async()=>{
 });
 afterAll(async()=>{if(dir)await rm(dir,{recursive:true,force:true});});
 const req=(path:string,method='GET',body?:unknown,headers:Record<string,string>={})=>api(new Request('http://localhost:3001/api'+path,{method,headers:{'content-type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)}));
+test('Reset removes active and trashed files and persists an empty library',async()=>{
+ const resetDir=await mkdtemp(join(tmpdir(),'rune-reset-test-'));
+ try {
+  const path=join(resetDir,'scripts.json');const resetStore=await JsonPadStore.open(path);const resetApi=createApi(resetStore);
+  const active=await resetStore.create();const deleted=await resetStore.create();await resetStore.delete(deleted.id);
+  const response=await resetApi(new Request('http://localhost:3001/api/reset',{method:'POST'}));
+  expect(await response.json()).toEqual({reset:true});
+  expect((await JsonPadStore.open(path)).list()).toEqual([]);expect((await JsonPadStore.open(path)).listTrash()).toEqual([]);
+  expect(await readdir(resetStore.savesPath)).toEqual([]);expect(await readdir(resetStore.trashPath)).toEqual([]);
+  expect(resetStore.get(active.id)).toBeUndefined();
+ } finally {await rm(resetDir,{recursive:true,force:true});}
+});
 test('JSON persists Unicode and revisions across restart',async()=>{
  expect(await (await req('/health')).json()).toEqual({database:'json',ok:true});
  const created=await req('/pads','POST');expect(created.status).toBe(201);const pad=await created.json();

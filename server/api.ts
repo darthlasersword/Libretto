@@ -27,6 +27,12 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
    }
    if (setup?.status().required && url.pathname !== '/api/health') return json({error:'Choose a storage folder to get started.'},409);
    if (url.pathname==='/api/health' && req.method==='GET') return json({database:'json',ok:true});
+   if (url.pathname==='/api/reset' && req.method==='POST') {
+    await store.reset();
+    const backup=await store.backup();
+    if (backup.scripts.length || backup.trash.length) throw new Error('Reset verification failed.');
+    return json({reset:true});
+   }
    if (url.pathname==='/api/backup') {
     if (req.method==='GET') return new Response(JSON.stringify(await store.backup()),{headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
     if (req.method==='POST') {

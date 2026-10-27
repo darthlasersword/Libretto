@@ -208,6 +208,11 @@ export class JsonPadStore {
   const removed=data.trash;data.trash=[];
   return {changed:removed.length>0,result:removed.length,remove:removed.map(p=>this.deletedPath(p)),forget:removed.map(p=>p.id)};
  }); }
+ async reset():Promise<void> { return this.mutate(async data=>{
+  const active=data.scripts;const deleted=data.trash;
+  data.scripts=[];data.trash=[];
+  return {changed:active.length+deleted.length>0,result:undefined,remove:[...active.map(p=>this.activePath(p)),...deleted.map(p=>this.deletedPath(p))],forget:[...active,...deleted].map(p=>p.id)};
+ }); }
  private async mutate<T>(modify:(draft:DataFile)=>Promise<{changed:boolean;result:T;remove?:string[];forget?:string[]}>):Promise<T> {
   const work=this.pending.then(async()=>{
    const draft=clone(this.data);const {changed,result,remove,forget}=await modify(draft);
