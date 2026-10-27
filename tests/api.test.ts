@@ -177,3 +177,31 @@ test('Trash persists, restores files, and permanently deletes selected or all',a
  expect((await JsonPadStore.open(trashFile)).listTrash()).toEqual([]);
  expect((await req('/trash/delete','POST',{ids:['bad']})).status).toBe(400);
 });
+
+test('A chosen storage folder persists scripts without overwriting existing files',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rune-chosen-folder-'));
+ try {
+  const folder=join(root,'my files');const index=join(root,'data','scripts.json');
+  await mkdir(folder);await writeFile(join(folder,'Untitled.md'),'existing file');
+  const chosen=await JsonPadStore.open(index,folder);
+  const pad=await chosen.create();
+  expect(await readFile(join(folder,'Untitled.md'),'utf8')).toBe('existing file');
+  expect(await readFile(join(folder,'Untitled (2).md'),'utf8')).toBe('');
+  const saved=await chosen.update(pad.id,{...pad,content:'Hello'});
+  expect(saved.status).toBe('saved');
+  expect((await JsonPadStore.open(index,folder)).get(pad.id)?.content).toBe('Hello');
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('Folder browsing returns the selection or cancellation and rejects cross-origin requests',async()=>{
+ let selected:string|null='/home/example/My Notes';
+ let calls=0;
+ const setup={status:()=>({required:true,path:'/default'}),configure:async()=>store,chooseFolder:async()=>{calls++;return selected;}};
+ const chooserApi=createApi(store,new Set(),setup);
+ const browse=(origin?:string)=>chooserApi(new Request('http://localhost:3001/api/setup/browse',{method:'POST',headers:origin?{origin}:{}}));
+ expect(await (await browse()).json()).toEqual({path:selected});
+ selected=null;
+ expect(await (await browse()).json()).toEqual({path:null});
+ expect((await browse('https://untrusted.example')).status).toBe(403);
+ expect(calls).toBe(2);
+});

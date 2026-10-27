@@ -1,14 +1,60 @@
 import { JsonPadStore } from './json-store';
 import { createApi } from './api';
-import { resolve, sep } from 'node:path';
-import { access } from 'node:fs/promises';
+import { chooseFolder } from './folder-picker';
+import { resolve, sep, isAbsolute, dirname, join } from 'node:path';
+import { access, readFile, writeFile, rename, mkdir, stat, open, rm } from 'node:fs/promises';
 const scriptsFile=resolve(import.meta.dir,'../data/scripts.json');
 const previousFile=resolve(import.meta.dir,'../data/pads.json');
 let defaultFile=scriptsFile;
 try { await access(scriptsFile); } catch { try { await access(previousFile); defaultFile=previousFile; } catch { /* New library. */ } }
-const store=await JsonPadStore.open(process.env.RUNE_DATA_FILE || process.env.LIBRETTO_DATA_FILE || process.env.CARETI_DATA_FILE || defaultFile);
+const dataFile=process.env.RUNE_DATA_FILE || process.env.LIBRETTO_DATA_FILE || process.env.CARETI_DATA_FILE || defaultFile;
+const configFile=resolve(dataFile)+'.location.json';
+let config: { required: boolean; path: string };
+try {
+ config=JSON.parse(await readFile(configFile,'utf8'));
+ if(typeof config.required!=='boolean' || typeof config.path!=='string' || !isAbsolute(config.path)) throw new Error('Invalid Rune storage configuration.');
+} catch (error) {
+ if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+ let existing=true;
+ try { await access(dataFile); } catch (e) { if ((e as NodeJS.ErrnoException).code==='ENOENT') existing=false; else throw e; }
+ const dataDir=dirname(resolve(dataFile));
+ const root=basenameForData(dataDir);
+ config={required:!existing, path:join(root,'saves')};
+ await saveConfig(config);
+}
+function basenameForData(dataDir:string) { return dataDir.split(sep).pop()==='data' ? dirname(dataDir) : dataDir; }
+async function saveConfig(value:typeof config) {
+ await mkdir(dirname(configFile),{recursive:true});
+ const temp=configFile+'.'+crypto.randomUUID()+'.tmp';
+ try { await writeFile(temp,JSON.stringify(value,null,2)+'\n',{flag:'wx',mode:0o600}); await rename(temp,configFile); }
+ finally { await rm(temp,{force:true}); }
+}
+let store=await JsonPadStore.open(dataFile,config.path);
+let configuring=false;
+const setup={
+ chooseFolder,
+ status:()=>({...config}),
+ async configure(path:string) {
+  if(configuring || !config.required) throw new Error('Storage is already being set up.');
+  configuring=true;
+  try {
+   if(!isAbsolute(path)) throw new Error('Enter an absolute folder path.');
+   const folder=resolve(path);
+   // The suggested default may not exist yet; other paths must already exist.
+   if(folder===config.path) await mkdir(folder,{recursive:true});
+   try { if(!(await stat(folder)).isDirectory()) throw new Error(); }
+   catch { throw new Error('Choose an existing folder on the computer running Rune.'); }
+   const probe=join(folder,'.rune-'+crypto.randomUUID()+'.tmp');
+   try { const handle=await open(probe,'wx',0o600); await handle.close(); await rm(probe); }
+   catch { throw new Error('Rune cannot write to this folder. Check its permissions.'); }
+   const next=await JsonPadStore.open(dataFile,folder);
+   const nextConfig={required:false,path:folder};
+   await saveConfig(nextConfig); config=nextConfig; store=next; return next;
+  } finally { configuring=false; }
+ }
+};
 const devOrigins=process.env.CARETI_DEV_SERVER==='1'?new Set(['http://127.0.0.1:4173','http://localhost:4173']):new Set<string>();
-const api=createApi(store,devOrigins);
+const api=createApi(store,devOrigins,setup);
 const root=resolve(import.meta.dir,'../dist');
 const server=Bun.serve({hostname:process.env.HOST||'127.0.0.1',port:Number(process.env.PORT||3001),maxRequestBodySize:52000000,async fetch(req){
  const url=new URL(req.url);
