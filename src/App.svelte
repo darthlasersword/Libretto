@@ -41,13 +41,13 @@
   import Editor from "./lib/Editor.svelte";
   import { renderMarkdown } from "./lib/markdown";
   import { importFiles } from "./lib/upload";
+  import { filePath } from "./lib/paths";
   import { defaultPreferences, fontFamilies, parsePreferences, preferencesKey, type Preferences } from "./lib/preferences";
   import { wordCount, type Folder, type Pad, type TrashedPad } from "./lib/types";
   let pads: Pad[] = [];
   let folders: Folder[] = [];
   let expandedFolders: string[] = [];
   let cardMenu: string | null = null;
-  let folderMenu: string | null = null;
   let uploadBusy = false;
   let fileUpload: HTMLInputElement;
   let folderUpload: HTMLInputElement;
@@ -200,7 +200,7 @@
     .filter(
       (p) =>
         (filter !== "pinned" || p.pinned) &&
-        (p.title + " " + p.content).toLowerCase().includes(query.toLowerCase()),
+        (filePath(p, folders) + " " + p.content).toLowerCase().includes(query.toLowerCase()),
     )
     .sort((a, b) => comparePads(a, b, sort, recentIds));
   $: pinned = visible.filter((p) => p.pinned);
@@ -226,7 +226,7 @@
     filter = saved.filter === "pinned" || saved.filter === "trash" ? saved.filter : "all";
     sort = sortOptions.some((option) => option.value === saved.sort) ? saved.sort! : "updated";
     recentIds = Array.isArray(saved.recentIds) ? saved.recentIds.filter((id): id is string => typeof id === "string").slice(0, 1000) : [];
-    query = typeof saved.query === "string" ? saved.query : "";
+    query = "";
     sidebar = typeof saved.sidebar === "boolean" ? saved.sidebar : innerWidth > 760;
     selectedId = typeof saved.selectedId === "string" ? saved.selectedId : null;
     readModes = saved.readModes && typeof saved.readModes === "object" && !Array.isArray(saved.readModes)
@@ -412,12 +412,13 @@
     reading = value;
     if (active) readModes = { ...readModes, [active.id]: value };
   }
-  async function showFilter(next: "all" | "pinned" | "trash") {
+  async function showFilter(next: "all" | "pinned" | "trash", clearSearch = false) {
     if (active && !(await flush())) return;
     settingsOpen = false;
     active = null;
     focus = false;
     filter = next;
+    if (clearSearch) query = "";
     sortMenu = false;
     trashSelection = [];
     if (innerWidth <= 760) sidebar = false;
@@ -446,7 +447,7 @@
     } catch (e) { showNotice("Unable to create folder: " + (e as Error).message); }
   }
   async function renameFolder(folder: Folder) {
-    const name = prompt("Folder name:", folder.name); folderMenu = null;
+    const name = prompt("Folder name:", folder.name);
     if (name === null || !name.trim() || name.trim() === folder.name) return;
     try {
       const updated: Folder = await request("/folders/" + folder.id, {method:"PUT",body:JSON.stringify({name:name.trim()})});
@@ -454,7 +455,6 @@
     } catch (e) { showNotice("Unable to rename folder: " + (e as Error).message); }
   }
   async function deleteFolder(folder: Folder) {
-    folderMenu = null;
     if (!confirm(`Delete folder “${folder.name}” and its subfolders? Files will be moved to the library.`)) return;
     try { await request("/folders/" + folder.id, {method:"DELETE"}); await load(); }
     catch (e) { showNotice("Unable to delete folder: " + (e as Error).message); }
@@ -719,7 +719,6 @@
   function clickOutsideMenu(event: PointerEvent) {
     const target = event.target as Element;
     if (cardMenu && !target.closest(".card-menu, .card-more")) cardMenu = null;
-    if (folderMenu && !target.closest(".folder-menu, .folder-more")) folderMenu = null;
     if (menu && menuAnchor && !menuAnchor.contains(event.target as Node))
       menu = false;
     if (sortMenu && sortAnchor && !sortAnchor.contains(event.target as Node))
@@ -768,7 +767,7 @@
     }
     if (event.key === "Escape") {
       if (shortcutsOpen) { shortcutsOpen = false; return; }
-      if (cardMenu || folderMenu) { cardMenu = null; folderMenu = null; return; }
+      if (cardMenu) { cardMenu = null; return; }
       if (settingsOpen) { settingsOpen = false; return; }
       if (deleteTarget) { deleteTarget = null; return; }
       if (renameId) { event.preventDefault(); cancelRename(); return; }
@@ -876,7 +875,7 @@
       <nav aria-label="Library">
         <button
           class:chosen={filter === "all" && !active && !settingsOpen}
-          onclick={() => showFilter("all")}
+          onclick={() => showFilter("all", true)}
           ><FileText size={16} /> Files <span>{pads.length}</span></button
         >
         <button class:chosen={filter === "trash" && !active && !settingsOpen} onclick={() => showFilter("trash")}
@@ -888,13 +887,13 @@
             <button class="folder-toggle" aria-expanded={expandedFolders.includes(row.folder.id)} onclick={() => expandedFolders = expandedFolders.includes(row.folder.id) ? expandedFolders.filter(id => id !== row.folder.id) : [...expandedFolders, row.folder.id]}>
               {#if expandedFolders.includes(row.folder.id)}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}<FolderIcon size={17} fill="currentColor" /> <span>{row.folder.name}</span>
             </button>
-            <button class="folder-more icon" aria-label={"Folder actions for " + row.folder.name} aria-expanded={folderMenu === row.folder.id} onclick={() => folderMenu = folderMenu === row.folder.id ? null : row.folder.id}><MoreVertical size={15} /></button>
-            {#if folderMenu === row.folder.id}<div class="folder-menu"><button onclick={() => renameFolder(row.folder)}>Rename folder</button><button onclick={() => deleteFolder(row.folder)}>Delete folder</button></div>{/if}
+            <button class="folder-action icon" aria-label={"Rename folder " + row.folder.name} title="Rename folder" onclick={() => renameFolder(row.folder)}><Pencil size={15} /></button>
+            <button class="folder-action icon" aria-label={"Delete folder " + row.folder.name} title="Delete folder" onclick={() => deleteFolder(row.folder)}><Trash2 size={15} /></button>
           </div>
           {#if expandedFolders.includes(row.folder.id)}
             {#each sidebarPads.filter(p => p.folder_id === row.folder.id) as pad (pad.id)}
               <div class:current={active?.id === pad.id && !settingsOpen} class="folder-file" style:padding-left={(row.depth * 16) + 28 + "px"}>
-                <FileText size={16} /><button class="script-open" onclick={() => open(pad)} title={pad.title}>{pad.title}</button>{#if pad.pinned}<Pin size={14} fill="currentColor" />{/if}
+                <FileText size={16} /><button class="script-open" onclick={() => open(pad)} title={filePath(pad, folders)}><span>{pad.title}</span><small class="file-path">{filePath(pad, folders)}</small></button>{#if pad.pinned}<Pin size={14} fill="currentColor" />{/if}
               </div>
             {/each}
           {/if}
@@ -925,7 +924,7 @@
               <button
                 class="script-open"
                 onclick={() => open(pad)}
-                title={pad.title}><span>{pad.title || "Untitled"}</span></button
+                title={filePath(pad, folders)}><span>{pad.title || "Untitled"}</span><small class="file-path">{filePath(pad, folders)}</small></button
               >
               <button
                 class="row-action"
@@ -1076,7 +1075,7 @@
                 title="Rename"
                 aria-label={"Rename " + (active.title || "Untitled")}
                 onclick={editTitle}>{active.title || "Untitled"}</button
-              >{/if}
+              >{/if}<span class="writer-path" title={filePath(active, folders)}>{filePath(active, folders)}</span>
           </div>
           <div class="writer-actions">
             <div class="segmented">
@@ -1172,7 +1171,7 @@
                 <div class="trash-row">
                   <button class="trash-select" class:selected={trashSelection.includes(pad.id)} aria-pressed={trashSelection.includes(pad.id)} aria-label={"Select " + pad.title} onclick={() => toggleTrashSelection(pad.id)}>{#if trashSelection.includes(pad.id)}<Check size={15} />{/if}</button>
                   <button class="trash-details" onclick={() => (trashPreview = pad)} title={"Preview " + pad.title}>
-                    <strong>{pad.title || "Untitled"}</strong><span>Deleted {date(pad.deleted_at)} · {wordCount(pad.content)} words</span>
+                    <strong>{pad.title || "Untitled"}</strong><span class="file-path">{filePath(pad, folders)}</span><span>Deleted {date(pad.deleted_at)} · {wordCount(pad.content)} words</span>
                   </button>
                   <div class="trash-actions">
                     <button class="icon" onclick={() => (trashPreview = pad)} aria-label={"Preview " + pad.title} title="Preview"><Eye size={17} /></button>
@@ -1251,7 +1250,7 @@
                   {#each group.items as pad}
                     <div class="pad-card" class:selected={selectedId === pad.id} data-pad-id={pad.id}>
                       <button class="pad-open" onclick={() => open(pad)}
-                        ><FileText class="card-file-icon" size={25} /><h3>{pad.title}</h3>
+                        ><FileText class="card-file-icon" size={25} /><h3>{pad.title}</h3><span class="file-path card-path" title={filePath(pad, folders)}>{filePath(pad, folders)}</span>
                         {#if layout === "grid"}<p class="card-preview">
                             {preview(pad.content) || ""}
                           </p>{/if}
