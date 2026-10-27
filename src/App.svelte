@@ -29,6 +29,7 @@
     RotateCcw,
     Database,
     Upload,
+    Settings,
   } from "lucide-svelte";
   import Editor from "./lib/Editor.svelte";
   import { renderMarkdown } from "./lib/markdown";
@@ -91,7 +92,7 @@
   let setupError = "";
   let setupBusy = false;
   let browsingFolder = false;
-  let backupOpen = false;
+  let settingsOpen = false;
   let backupBusy = false;
   let resetBusy = false;
   let resetVerified = false;
@@ -347,6 +348,7 @@
   }
   async function open(pad: Pad) {
     if (active && !(await flush())) return;
+    settingsOpen = false;
     active = { ...(pads.find((p) => p.id === pad.id) || pad) };
     recentIds = [pad.id, ...recentIds.filter((id) => id !== pad.id)].slice(0, 1000);
     sortMenu = false;
@@ -360,6 +362,7 @@
   }
   async function back() {
     if (!(await flush())) return;
+    settingsOpen = false;
     active = null;
     focus = false;
     menu = false;
@@ -371,6 +374,7 @@
   }
   async function showFilter(next: "all" | "pinned" | "trash") {
     if (active && !(await flush())) return;
+    settingsOpen = false;
     active = null;
     focus = false;
     filter = next;
@@ -392,6 +396,13 @@
     } finally {
       creating = false;
     }
+  }
+  async function showSettings() {
+    if (active && !(await flush())) return;
+    settingsOpen = true;
+    focus = false;
+    menu = false;
+    if (innerWidth <= 760) sidebar = false;
   }
   async function pin(pad: Pad) {
     if (active?.id === pad.id) {
@@ -567,7 +578,6 @@
       if (active && !(await flush())) throw new Error(saveError || "Save the current file before restoring.");
       const result = await request("/backup", {method:"POST", body:await file.text()});
       await load();
-      backupOpen = false;
       showNotice(`Restored ${result.scripts} files and ${result.trash} trashed files.`);
     } catch (e) { showNotice("Restore failed: " + (e as Error).message); }
     finally { backupBusy = false; input.value = ""; }
@@ -665,6 +675,7 @@
     }
     if (event.key === "Escape") {
       if (shortcutsOpen) { shortcutsOpen = false; return; }
+      if (settingsOpen) { settingsOpen = false; return; }
       if (deleteTarget) { deleteTarget = null; return; }
       if (renameId) { event.preventDefault(); cancelRename(); return; }
       if (titleEditing) { titleInput.blur(); return; }
@@ -675,7 +686,7 @@
       if (query) { query = ""; searchInput?.blur(); }
       return;
     }
-    if (shortcutsOpen || deleteTarget || renameId) return;
+    if (shortcutsOpen || settingsOpen || deleteTarget || renameId) return;
     if (!mod && event.altKey && !shift && !typing && !active && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
       event.preventDefault();
       selectAdjacent(event.key === "ArrowDown" ? 1 : -1);
@@ -765,22 +776,22 @@
       >
       <nav aria-label="Library">
         <button
-          class:chosen={filter === "all" && !active}
+          class:chosen={filter === "all" && !active && !settingsOpen}
           onclick={() => showFilter("all")}
           ><FileText size={16} /> Files <span>{pads.length}</span></button
         >
         <button
-          class:chosen={filter === "pinned" && !active}
+          class:chosen={filter === "pinned" && !active && !settingsOpen}
           onclick={() => showFilter("pinned")}
           ><Pin size={16} /> Pinned
           <span>{pads.filter((p) => p.pinned).length}</span></button
         >
-        <button class:chosen={filter === "trash" && !active} onclick={() => showFilter("trash")}
+        <button class:chosen={filter === "trash" && !active && !settingsOpen} onclick={() => showFilter("trash")}
           ><Trash2 size={16} /> Trash <span>{trash.length}</span></button>
       </nav>
       <div class="script-list">
         {#each sidebarPads as pad (pad.id)}
-          <div class:current={active?.id === pad.id} class="script-row">
+          <div class:current={active?.id === pad.id && !settingsOpen} class="script-row">
             {#if renameId === pad.id && renameSource === "sidebar"}
               <input
                 bind:this={renameInput}
@@ -825,14 +836,14 @@
       </div>
       {#if error}<div class="sidebar-error" role="alert">{error}</div>{/if}
       <div class="sidebar-bottom">
-        <button class="icon" aria-label="Reset Rune" title={resetVerified ? "Reset verified" : "Reset Rune (permanently deletes all files)"} onclick={resetRune} disabled={resetBusy || resetVerified}><Trash2 size={16} /></button>
-        <button class="shortcuts-button" onclick={() => (backupOpen = true)} title="Storage and backup"
-          ><Database size={16} /> Backup</button>
+        <button class="shortcuts-button" class:settings-selected={settingsOpen} onclick={showSettings} title="Settings" aria-current={settingsOpen ? "page" : undefined}
+          ><Settings size={16} /> Settings</button>
         <button
-          class="shortcuts-button"
+          class="icon"
           onclick={() => (shortcutsOpen = true)}
+          aria-label="Keyboard shortcuts"
           title="Keyboard shortcuts · Ctrl/⌘ + /"
-          ><Keyboard size={16} /> Shortcuts</button
+          ><Keyboard size={16} /></button
         >
         <button
           class="icon"
@@ -844,7 +855,7 @@
       </div>
     </aside>
   <main>
-    {#if !focus && !active}
+    {#if !focus && (!active || settingsOpen)}
       <header class="topbar">
         <button
           class="icon sidebar-toggle"
@@ -859,7 +870,29 @@
         >
       </header>
     {/if}
-    {#if active}
+    {#if settingsOpen}
+      <div class="dashboard settings-page">
+        <div class="settings-heading"><div><h1>Settings</h1><p>Manage your Rune library and storage.</p></div><button class="text-button" onclick={() => (settingsOpen = false)}><ArrowLeft size={16} /> Back</button></div>
+        <section class="settings-section" aria-labelledby="storage-heading">
+          <h2 id="storage-heading"><Database size={18} /> Storage</h2>
+          <p>Scripts are saved in this folder. Deleted scripts and file details are stored separately by Rune.</p>
+          <code class="settings-path">{storagePath}</code>
+        </section>
+        <section class="settings-section" aria-labelledby="backup-heading">
+          <h2 id="backup-heading">Backup</h2>
+          <p>Download your active files and Trash, or restore a backup. Restoring adds copies and keeps your current files.</p>
+          <div class="backup-actions">
+            <button class="primary" onclick={downloadBackup} disabled={backupBusy || resetBusy || resetVerified}><Download size={16} /> Download backup</button>
+            <label class:disabled={backupBusy || resetBusy || resetVerified} class="backup-upload"><Upload size={16} /> Restore backup<input type="file" accept=".json,application/json" onchange={importBackup} disabled={backupBusy || resetBusy || resetVerified} /></label>
+          </div>
+        </section>
+        <section class="settings-section" aria-labelledby="reset-heading">
+          <h2 id="reset-heading">Reset Rune</h2>
+          <p>Permanently delete all files and Trash. After resetting, refresh Rune to choose a storage folder again.</p>
+          <button class="reset-button" onclick={resetRune} disabled={resetBusy || resetVerified || backupBusy}><Trash2 size={16} /> {resetBusy ? "Resetting…" : resetVerified ? "Reset verified" : "Reset Rune"}</button>
+        </section>
+      </div>
+    {:else if active}
       <section class="writer">
         <div class="writer-toolbar" inert={focus && focusWriting && !focusReveal}>
           <div class="writer-back">
@@ -1132,18 +1165,6 @@
       {#if setupError}<p role="alert" class="setup-error">{setupError}</p>{/if}
       <div class="modal-actions"><button class="primary" type="submit" disabled={setupBusy || browsingFolder}>Use this folder</button></div>
     </form>
-  </dialog>
-{/if}
-{#if backupOpen}
-  <dialog use:openDialog={() => (backupOpen = false)} class="modal backup-modal" oncancel={() => (backupOpen = false)} aria-modal="true" aria-label="Storage and backup">
-    <button class="modal-close icon" onclick={() => (backupOpen = false)} aria-label="Close backup"><X size={18} /></button>
-    <h2>Storage and backup</h2>
-    <p>Scripts are saved in <code>{storagePath}</code>. Deleted scripts and file details are stored separately by Rune. Browser preferences stay in this browser.</p>
-    <p>Download a backup to move your library to another device or recover from accidental edits. It includes active scripts and Trash. Restoring adds copies and keeps current files.</p>
-    <div class="backup-actions">
-      <button class="primary" onclick={downloadBackup} disabled={backupBusy}><Download size={16} /> Download backup</button>
-      <label class:disabled={backupBusy} class="backup-upload"><Upload size={16} /> Restore backup<input type="file" accept=".json,application/json" onchange={importBackup} disabled={backupBusy} /></label>
-    </div>
   </dialog>
 {/if}
 {#if deleteTarget}
