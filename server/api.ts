@@ -30,7 +30,7 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
    if (url.pathname==='/api/reset' && req.method==='POST') {
     await store.reset();
     const backup=await store.backup();
-    if (backup.scripts.length || backup.trash.length) throw new Error('Reset verification failed.');
+    if (backup.scripts.length || backup.trash.length || backup.folders?.length) throw new Error('Reset verification failed.');
     if (setup?.reset) await setup.reset();
     return json({reset:true,setupRequired:setup?.status().required ?? false});
    }
@@ -45,7 +45,38 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
    }
    if (url.pathname==='/api/pads') {
     if (req.method==='GET') return json(store.list());
-    if (req.method==='POST') return json(await store.create(),201);
+    if (req.method==='POST') {
+     const body=await req.text();
+     if(!body) return json(await store.create(),201);
+     // JSON escaping can expand a valid two-megabyte text file up to sixfold.
+     if(new TextEncoder().encode(body).length>12_100_000) return json({error:'File too large'},413);
+     const input=JSON.parse(body);
+     if(!input || typeof input.title!=='string' || input.title.length>200 || typeof input.content!=='string' || new TextEncoder().encode(input.content).length>2_000_000 || !(input.folder_id===null || typeof input.folder_id==='string' && uuid.test(input.folder_id))) return json({error:'Invalid file'},400);
+     return json(await store.create(input),201);
+    }
+   }
+   if (url.pathname==='/api/folders') {
+    if(req.method==='GET') return json(store.listFolders());
+    if(req.method==='POST') {
+     const body=await req.json();
+     if(!body || typeof body.name!=='string' || !body.name.trim() || body.name.length>200 || !(body.parent_id===null || typeof body.parent_id==='string' && uuid.test(body.parent_id))) return json({error:'Invalid folder'},400);
+     return json(await store.createFolder(body.name,body.parent_id),201);
+    }
+   }
+   const folderId=url.pathname.match(/^\/api\/folders\/([^/]+)$/)?.[1];
+   if(folderId && uuid.test(folderId)) {
+    if(req.method==='DELETE') return await store.deleteFolder(folderId)?new Response(null,{status:204}):json({error:'Folder not found'},404);
+    if(req.method==='PUT') {
+     const body=await req.json();
+     if(!body || typeof body.name!=='string' || !body.name.trim() || body.name.length>200) return json({error:'Invalid folder'},400);
+     const folder=await store.renameFolder(folderId,body.name);return folder?json(folder):json({error:'Folder not found'},404);
+    }
+   }
+   const moveId=url.pathname.match(/^\/api\/pads\/([^/]+)\/move$/)?.[1];
+   if(moveId && uuid.test(moveId) && req.method==='POST') {
+    const body=await req.json();
+    if(!body || !(body.folder_id===null || typeof body.folder_id==='string' && uuid.test(body.folder_id))) return json({error:'Invalid folder'},400);
+    const pad=await store.movePad(moveId,body.folder_id);return pad?json(pad):json({error:'File not found'},404);
    }
    if (url.pathname==='/api/trash') {
     if (req.method==='GET') return json(store.listTrash());
@@ -72,8 +103,10 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
    if (req.method==='GET') { const pad=store.get(id); return pad?json(pad):json({error:'Pad not found'},404); }
    if (req.method==='DELETE') return await store.delete(id)?new Response(null,{status:204}):json({error:'Pad not found'},404);
    if (req.method==='PUT') {
-    if (Number(req.headers.get('content-length'))>2100000) return json({error:'Pad too large'},413);
-    const body=await req.json();
+    if (Number(req.headers.get('content-length'))>12_100_000) return json({error:'Pad too large'},413);
+    const raw=await req.text();
+    if (new TextEncoder().encode(raw).length>12_100_000) return json({error:'Pad too large'},413);
+    const body=JSON.parse(raw);
     if (!body || typeof body!=='object'||typeof body.title!=='string'||body.title.length>200||typeof body.content!=='string'||new TextEncoder().encode(body.content).length>2000000||typeof body.pinned!=='boolean'||!Number.isInteger(body.revision)) return json({error:'Invalid pad. Title limit: 200 characters; content limit: 2 MB.'},400);
     const result=await store.update(id,body);
     if (result.status==='saved') return json(result.pad);
@@ -83,6 +116,7 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
   } catch(error) {
    if(error instanceof SyntaxError) return json({error:'Invalid JSON'},400);
    if(error instanceof TypeError && error.message==='Invalid Rune backup file.') return json({error:error.message},400);
+   if(error instanceof TypeError && error.message==='Folder not found.') return json({error:error.message},400);
    console.error('API request failed',error);
    return json({error:'Unable to access the saved file. Your draft is still in this window.'},503);
   }

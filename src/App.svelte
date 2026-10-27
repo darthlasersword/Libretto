@@ -30,11 +30,27 @@
     Database,
     Upload,
     Settings,
+    Folder as FolderIcon,
+    FolderPlus,
+    FilePlus,
+    FileUp,
+    ChevronRight,
+    ChevronDown,
+    MoreVertical,
   } from "lucide-svelte";
   import Editor from "./lib/Editor.svelte";
   import { renderMarkdown } from "./lib/markdown";
-  import { wordCount, type Pad, type TrashedPad } from "./lib/types";
+  import { importFiles } from "./lib/upload";
+  import { defaultPreferences, fontFamilies, parsePreferences, preferencesKey, type Preferences } from "./lib/preferences";
+  import { wordCount, type Folder, type Pad, type TrashedPad } from "./lib/types";
   let pads: Pad[] = [];
+  let folders: Folder[] = [];
+  let expandedFolders: string[] = [];
+  let cardMenu: string | null = null;
+  let folderMenu: string | null = null;
+  let uploadBusy = false;
+  let fileUpload: HTMLInputElement;
+  let folderUpload: HTMLInputElement;
   let trash: TrashedPad[] = [];
   let trashAvailable = true;
   let trashSelection: string[] = [];
@@ -93,10 +109,20 @@
   let setupBusy = false;
   let browsingFolder = false;
   let settingsOpen = false;
+  let settingsSection: "appearance" | "editor" | "files" | "data" = "appearance";
+  let preferences: Preferences = {...defaultPreferences};
+  let preferencesReady = false;
+  $: if (preferencesReady && typeof document !== "undefined") {
+    document.documentElement.style.setProperty("--ui-scale", String(preferences.interfaceSize / 16));
+    document.documentElement.style.setProperty("--ui-font", fontFamilies[preferences.interfaceFont]);
+    document.documentElement.style.setProperty("--editor-font", fontFamilies[preferences.editorFont]);
+    document.documentElement.style.setProperty("--editor-size", preferences.editorSize + "px");
+    try { localStorage.setItem(preferencesKey, JSON.stringify(preferences)); } catch {}
+  }
   let backupBusy = false;
   let resetBusy = false;
   let resetVerified = false;
-  $: if (pads.length || trash.length || dirty) resetVerified = false;
+  $: if (pads.length || trash.length || folders.length || dirty) resetVerified = false;
   let notice = "";
   let noticeTimer: ReturnType<typeof setTimeout>;
   let stateReady = false;
@@ -159,6 +185,17 @@
     }
   }
   $: sidebarPads = [...pads].sort((a, b) => comparePads(a, b, "opened", recentIds));
+  $: folderRows = flattenFolders(folders, expandedFolders);
+  function flattenFolders(items: Folder[], expanded: string[]) {
+    const rows: {folder: Folder; depth: number}[] = [];
+    const visit = (parent: string | null, depth: number, seen: Set<string>) => {
+      for (const folder of items.filter(f => f.parent_id === parent && !seen.has(f.id))) {
+        rows.push({folder, depth});
+        if (expanded.includes(folder.id)) visit(folder.id, depth + 1, new Set([...seen, folder.id]));
+      }
+    };
+    visit(null, 0, new Set()); return rows;
+  }
   $: visible = pads
     .filter(
       (p) =>
@@ -171,6 +208,8 @@
   $: if (typeof document !== "undefined")
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   onMount(() => {
+    try { preferences = parsePreferences(JSON.parse(localStorage.getItem(preferencesKey) || "null")); } catch { preferences = {...defaultPreferences}; }
+    preferencesReady = true;
     const saved = readState();
     dark = saved.theme === "dark" || (saved.theme !== "light" && (
       (localStorage.getItem("rune-theme") ?? localStorage.getItem("libretto-theme") ??
@@ -266,6 +305,7 @@
     error = "";
     try {
       pads = await request("/pads");
+      folders = await request("/folders");
     } catch (e) {
       error = (e as Error).message;
     }
@@ -397,6 +437,52 @@
       creating = false;
     }
   }
+  async function createFolder() {
+    const name = prompt("Folder name:");
+    if (name === null || !name.trim()) return;
+    try {
+      const folder: Folder = await request("/folders", {method:"POST", body:JSON.stringify({name:name.trim(),parent_id:null})});
+      folders = [...folders, folder]; expandedFolders = [...expandedFolders, folder.id];
+    } catch (e) { showNotice("Unable to create folder: " + (e as Error).message); }
+  }
+  async function renameFolder(folder: Folder) {
+    const name = prompt("Folder name:", folder.name); folderMenu = null;
+    if (name === null || !name.trim() || name.trim() === folder.name) return;
+    try {
+      const updated: Folder = await request("/folders/" + folder.id, {method:"PUT",body:JSON.stringify({name:name.trim()})});
+      folders = folders.map(f => f.id === updated.id ? updated : f);
+    } catch (e) { showNotice("Unable to rename folder: " + (e as Error).message); }
+  }
+  async function deleteFolder(folder: Folder) {
+    folderMenu = null;
+    if (!confirm(`Delete folder “${folder.name}” and its subfolders? Files will be moved to the library.`)) return;
+    try { await request("/folders/" + folder.id, {method:"DELETE"}); await load(); }
+    catch (e) { showNotice("Unable to delete folder: " + (e as Error).message); }
+  }
+  async function uploadFiles(event: Event, withFolders: boolean) {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []); if (!files.length || uploadBusy) return;
+    uploadBusy = true; let imported = 0;
+    try {
+      const result = await importFiles(files, withFolders, {
+        createFolder: (name, parent_id) => request("/folders", {method:"POST",body:JSON.stringify({name,parent_id})}),
+        createFile: (title, content, folder_id) => request("/pads", {method:"POST",body:JSON.stringify({title,content,folder_id})}),
+        onFolder: folder => { folders = [...folders, folder]; expandedFolders = [...expandedFolders, folder.id]; },
+        onFile: pad => { pads = [pad, ...pads]; imported++; },
+      });
+      const skipped = result.skipped ? ` Skipped ${result.skipped} unsupported file${result.skipped === 1 ? "" : "s"}; Rune imports Markdown and text files.` : "";
+      showNotice((imported ? `Imported ${imported} file${imported === 1 ? "" : "s"}.` : "No Markdown or text files found.") + skipped);
+    } catch (e) { showNotice(`Imported ${imported} files. ` + (e as Error).message); }
+    finally { uploadBusy = false; input.value = ""; }
+  }
+  async function movePad(pad: Pad, folder_id: string | null) {
+    try {
+      const moved: Pad = await request("/pads/" + pad.id + "/move", {method:"POST",body:JSON.stringify({folder_id})});
+      pads = pads.map(p => p.id === moved.id ? moved : p);
+      if (folder_id) expandedFolders = [...new Set([...expandedFolders, folder_id])];
+      cardMenu = null;
+    } catch (e) { showNotice("Unable to move file: " + (e as Error).message); }
+  }
   async function showSettings() {
     if (active && !(await flush())) return;
     settingsOpen = true;
@@ -491,6 +577,10 @@
       deleteTarget = null;
     }
   }
+  function requestTrash(pad: Pad) {
+    deleteTarget = pad;
+    if (!preferences.confirmTrash) void remove();
+  }
   async function restore(pad: TrashedPad) {
     try {
       const restored: Pad = await request("/trash/" + pad.id + "/restore", {method:"POST"});
@@ -559,7 +649,7 @@
       const result = await request("/reset", {method:"POST"});
       const setup = await request("/setup", {cache:"no-store"});
       if (!result.reset || !result.setupRequired || !setup.required) throw new Error("Server reset or storage setup could not be verified.");
-      active = null; pads = []; trash = []; dirty = false; saveError = "";
+      active = null; pads = []; trash = []; folders = []; expandedFolders = []; dirty = false; saveError = "";
       selectedId = null; recentIds = []; readModes = {}; trashSelection = []; trashPreview = null;
       filter = "all"; query = ""; focus = false; reading = false;
       localStorage.removeItem(draftKey);
@@ -627,6 +717,9 @@
     if (focusReveal !== reveal) focusReveal = reveal;
   }
   function clickOutsideMenu(event: PointerEvent) {
+    const target = event.target as Element;
+    if (cardMenu && !target.closest(".card-menu, .card-more")) cardMenu = null;
+    if (folderMenu && !target.closest(".folder-menu, .folder-more")) folderMenu = null;
     if (menu && menuAnchor && !menuAnchor.contains(event.target as Node))
       menu = false;
     if (sortMenu && sortAnchor && !sortAnchor.contains(event.target as Node))
@@ -675,6 +768,7 @@
     }
     if (event.key === "Escape") {
       if (shortcutsOpen) { shortcutsOpen = false; return; }
+      if (cardMenu || folderMenu) { cardMenu = null; folderMenu = null; return; }
       if (settingsOpen) { settingsOpen = false; return; }
       if (deleteTarget) { deleteTarget = null; return; }
       if (renameId) { event.preventDefault(); cancelRename(); return; }
@@ -722,7 +816,7 @@
     else if (key === "u" && active && !reading) { event.preventDefault(); editor?.wrap("[", "](https://)"); }
     else if (key === "r" && pad) { event.preventDefault(); if (active) editTitle(); else beginRename(pad); }
     else if (key === "p" && pad) { event.preventDefault(); pin(pad); }
-    else if (key === "backspace" && pad) { event.preventDefault(); deleteTarget = pad; }
+    else if (key === "backspace" && pad) { event.preventDefault(); requestTrash(pad); }
   }
   function openDialog(node: HTMLDialogElement, dismiss: () => void) {
     node.showModal();
@@ -771,26 +865,41 @@
         aria-label="Rune home"><img class="brand-icon" src="/valknut.svg" alt="" />Rune</a
       >
       {/if}
-      <button class="sidebar-create" onclick={create} disabled={creating}
-        ><Plus size={15} /> New File</button
-      >
+      <div class="create-grid">
+        <button onclick={create} disabled={creating}><FilePlus size={17} /> New file</button>
+        <button onclick={createFolder}><FolderPlus size={17} /> New folder</button>
+        <button onclick={() => fileUpload.click()} disabled={uploadBusy}><FileUp size={17} /> Upload file</button>
+        <button onclick={() => folderUpload.click()} disabled={uploadBusy}><FolderPlus size={17} /> Upload folder</button>
+        <input bind:this={fileUpload} type="file" accept=".md,.markdown,.txt,text/plain,text/markdown" multiple hidden onchange={(e) => uploadFiles(e, false)} />
+        <input bind:this={folderUpload} type="file" webkitdirectory hidden onchange={(e) => uploadFiles(e, true)} />
+      </div>
       <nav aria-label="Library">
         <button
           class:chosen={filter === "all" && !active && !settingsOpen}
           onclick={() => showFilter("all")}
           ><FileText size={16} /> Files <span>{pads.length}</span></button
         >
-        <button
-          class:chosen={filter === "pinned" && !active && !settingsOpen}
-          onclick={() => showFilter("pinned")}
-          ><Pin size={16} /> Pinned
-          <span>{pads.filter((p) => p.pinned).length}</span></button
-        >
         <button class:chosen={filter === "trash" && !active && !settingsOpen} onclick={() => showFilter("trash")}
           ><Trash2 size={16} /> Trash <span>{trash.length}</span></button>
       </nav>
       <div class="script-list">
-        {#each sidebarPads as pad (pad.id)}
+        {#each folderRows as row (row.folder.id)}
+          <div class="folder-row" style:padding-left={(row.depth * 16) + 5 + "px"}>
+            <button class="folder-toggle" aria-expanded={expandedFolders.includes(row.folder.id)} onclick={() => expandedFolders = expandedFolders.includes(row.folder.id) ? expandedFolders.filter(id => id !== row.folder.id) : [...expandedFolders, row.folder.id]}>
+              {#if expandedFolders.includes(row.folder.id)}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}<FolderIcon size={17} fill="currentColor" /> <span>{row.folder.name}</span>
+            </button>
+            <button class="folder-more icon" aria-label={"Folder actions for " + row.folder.name} aria-expanded={folderMenu === row.folder.id} onclick={() => folderMenu = folderMenu === row.folder.id ? null : row.folder.id}><MoreVertical size={15} /></button>
+            {#if folderMenu === row.folder.id}<div class="folder-menu"><button onclick={() => renameFolder(row.folder)}>Rename folder</button><button onclick={() => deleteFolder(row.folder)}>Delete folder</button></div>{/if}
+          </div>
+          {#if expandedFolders.includes(row.folder.id)}
+            {#each sidebarPads.filter(p => p.folder_id === row.folder.id) as pad (pad.id)}
+              <div class:current={active?.id === pad.id && !settingsOpen} class="folder-file" style:padding-left={(row.depth * 16) + 28 + "px"}>
+                <FileText size={16} /><button class="script-open" onclick={() => open(pad)} title={pad.title}>{pad.title}</button>{#if pad.pinned}<Pin size={14} fill="currentColor" />{/if}
+              </div>
+            {/each}
+          {/if}
+        {/each}
+        {#each sidebarPads.filter(p => !p.folder_id || !folders.some(f => f.id === p.folder_id)) as pad (pad.id)}
           <div class:current={active?.id === pad.id && !settingsOpen} class="script-row">
             {#if renameId === pad.id && renameSource === "sidebar"}
               <input
@@ -812,6 +921,7 @@
                 onblur={() => commitRename(pad.id)}
               />
             {:else}
+              <FileText size={16} />
               <button
                 class="script-open"
                 onclick={() => open(pad)}
@@ -827,7 +937,7 @@
                 class="row-action"
                 aria-label={"Delete " + pad.title}
                 title="Delete"
-                onclick={() => (deleteTarget = pad)}
+                onclick={() => requestTrash(pad)}
                 ><Trash2 size={13} /></button
               >
             {/if}
@@ -872,14 +982,48 @@
     {/if}
     {#if settingsOpen}
       <div class="dashboard settings-page">
-        <div class="settings-heading"><div><h1>Settings</h1><p>Manage your Rune library and storage.</p></div><button class="text-button" onclick={() => (settingsOpen = false)}><ArrowLeft size={16} /> Back</button></div>
+        <div class="settings-heading"><div><h1>Settings</h1><p>Make Rune your own.</p></div><button class="text-button" onclick={() => (settingsOpen = false)}><ArrowLeft size={16} /> Back</button></div>
+        <div class="settings-layout">
+          <nav class="settings-nav" aria-label="Settings sections">
+            <button class:active={settingsSection === "appearance"} aria-current={settingsSection === "appearance" ? "page" : undefined} onclick={() => settingsSection = "appearance"}>Appearance</button>
+            <button class:active={settingsSection === "editor"} aria-current={settingsSection === "editor" ? "page" : undefined} onclick={() => settingsSection = "editor"}>Editor</button>
+            <button class:active={settingsSection === "files"} aria-current={settingsSection === "files" ? "page" : undefined} onclick={() => settingsSection = "files"}>Files &amp; Trash</button>
+            <button class:active={settingsSection === "data"} aria-current={settingsSection === "data" ? "page" : undefined} onclick={() => settingsSection = "data"}>Storage &amp; backup</button>
+          </nav>
+          <div class="settings-content">
+          {#if settingsSection === "appearance"}
+            <div class="settings-content-heading"><h2>Appearance</h2><p>Choose how Rune looks across the app.</p></div>
+            <section class="settings-section"><h3>Theme</h3><p>Choose a light or dark appearance.</p><div class="settings-control"><button class="setting-choice" onclick={setTheme}>{dark ? "Dark" : "Light"} · Switch to {dark ? "light" : "dark"}</button></div></section>
+            <section class="settings-section"><h3>Interface text</h3><p>Adjust the size and style of labels, menus, and other app text.</p>
+              <div class="settings-control-grid">
+                <label>Text size <span>{preferences.interfaceSize} px</span><input type="range" min="12" max="22" step="1" bind:value={preferences.interfaceSize} /></label>
+                <label>Font style <select bind:value={preferences.interfaceFont}><option value="sans">Sans serif</option><option value="serif">Serif</option><option value="mono">Monospace</option></select></label>
+              </div>
+            </section>
+          {:else if settingsSection === "editor"}
+            <div class="settings-content-heading"><h2>Editor</h2><p>Set a comfortable reading and writing style.</p></div>
+            <section class="settings-section"><h3>Text</h3><p>These settings apply to the editor and reading view.</p>
+              <div class="settings-control-grid">
+                <label>Text size <span>{preferences.editorSize} px</span><input type="range" min="12" max="32" step="1" bind:value={preferences.editorSize} /></label>
+                <label>Font style <select bind:value={preferences.editorFont}><option value="mono">Monospace</option><option value="sans">Sans serif</option><option value="serif">Serif</option></select></label>
+              </div>
+              <div class="settings-preview" style:font-family={fontFamilies[preferences.editorFont]} style:font-size={preferences.editorSize + "px"}>The quick brown fox jumps over the lazy dog.</div>
+            </section>
+          {:else if settingsSection === "files"}
+            <div class="settings-content-heading"><h2>Files &amp; Trash</h2><p>Choose how Rune handles your files.</p></div>
+            <section class="settings-section"><h3>Moving files to Trash</h3>
+              <label class="settings-checkbox"><input type="checkbox" bind:checked={preferences.confirmTrash} /><span><strong>Ask before moving files to Trash</strong><small>Turn this off to move files to Trash immediately. You can still restore them from Trash.</small></span></label>
+              <p>Permanent deletion and reset always require confirmation.</p>
+            </section>
+          {:else}
+          <div class="settings-content-heading"><h2>Storage &amp; backup</h2><p>Manage your library and keep a copy of your files.</p></div>
         <section class="settings-section" aria-labelledby="storage-heading">
-          <h2 id="storage-heading"><Database size={18} /> Storage</h2>
+          <h3 id="storage-heading"><Database size={18} /> Storage</h3>
           <p>Scripts are saved in this folder. Deleted scripts and file details are stored separately by Rune.</p>
           <code class="settings-path">{storagePath}</code>
         </section>
         <section class="settings-section" aria-labelledby="backup-heading">
-          <h2 id="backup-heading">Backup</h2>
+          <h3 id="backup-heading">Backup</h3>
           <p>Download your active files and Trash, or restore a backup. Restoring adds copies and keeps your current files.</p>
           <div class="backup-actions">
             <button class="primary" onclick={downloadBackup} disabled={backupBusy || resetBusy || resetVerified}><Download size={16} /> Download backup</button>
@@ -887,10 +1031,13 @@
           </div>
         </section>
         <section class="settings-section" aria-labelledby="reset-heading">
-          <h2 id="reset-heading">Reset Rune</h2>
+          <h3 id="reset-heading">Reset Rune</h3>
           <p>Permanently delete all files and Trash. After resetting, refresh Rune to choose a storage folder again.</p>
           <button class="reset-button" onclick={resetRune} disabled={resetBusy || resetVerified || backupBusy}><Trash2 size={16} /> {resetBusy ? "Resetting…" : resetVerified ? "Reset verified" : "Reset Rune"}</button>
         </section>
+          {/if}
+          </div>
+        </div>
       </div>
     {:else if active}
       <section class="writer">
@@ -974,7 +1121,7 @@
                     ><Download size={15} />Export Markdown</button
                   ><button
                     onclick={() => {
-                      deleteTarget = active;
+                      requestTrash(active!);
                       menu = false;
                     }}><Trash2 size={15} />Delete File</button
                   >
@@ -1051,6 +1198,7 @@
               >{/if}</label
           >
           <div class="view-controls">
+            <label class="pinned-filter"><input type="checkbox" checked={filter === "pinned"} onchange={(event) => showFilter(event.currentTarget.checked ? "pinned" : "all")} /> Show pinned only</label>
             <div class="sort-anchor" bind:this={sortAnchor}>
               <button class="sort-button" onclick={() => (sortMenu = !sortMenu)}
                 aria-label={"Sort: " + (sortOptions.find((option) => option.value === sort)?.label || "Last edited")}
@@ -1094,16 +1242,16 @@
             </p>
           </div>
         {:else}
-          {#each filter === "pinned" ? [{ name: "", items: visible }] : query ? [{ name: "", items: visible }] : [{ name: "Pinned", items: pinned }, { name: "", items: others }] as group}
+          {#each [{ name: "", items: visible }] as group}
             {#if group.items.length}<section class="pad-section">
                 {#if group.name}<h2 class="section-heading">
                     {group.name}
-                  </h2>{:else if filter === "all" && !query && pinned.length}<hr class="section-divider" />{/if}
+                  </h2>{/if}
                 <div class:pad-list={layout === "list"} class="pad-grid">
                   {#each group.items as pad}
                     <div class="pad-card" class:selected={selectedId === pad.id} data-pad-id={pad.id}>
                       <button class="pad-open" onclick={() => open(pad)}
-                        ><h3>{pad.title}</h3>
+                        ><FileText class="card-file-icon" size={25} /><h3>{pad.title}</h3>
                         {#if layout === "grid"}<p class="card-preview">
                             {preview(pad.content) || ""}
                           </p>{/if}
@@ -1138,10 +1286,14 @@
                         : "Pin " + pad.title}><Pin size={14} /></button
                       ><button
                         class="card-delete icon"
-                        onclick={() => (deleteTarget = pad)}
+                        onclick={() => requestTrash(pad)}
                         aria-label={"Delete " + pad.title}
                         title="Delete File"><Trash2 size={14} /></button
-                      >
+                      ><button class="card-more icon" onclick={() => cardMenu = cardMenu === pad.id ? null : pad.id} aria-label={"More actions for " + pad.title} aria-expanded={cardMenu === pad.id}><MoreVertical size={18} /></button>
+                      {#if cardMenu === pad.id}<div class="card-menu" role="group" aria-label={"Move " + pad.title}>
+                        <span>Move to</span><button onclick={() => movePad(pad, null)}>Files</button>
+                        {#each folders as folder}<button onclick={() => movePad(pad, folder.id)}>{folder.name}</button>{/each}
+                      </div>{/if}
                     </div>
                   {/each}
                 </div>
@@ -1167,7 +1319,7 @@
     </form>
   </dialog>
 {/if}
-{#if deleteTarget}
+{#if deleteTarget && preferences.confirmTrash}
   <dialog
     use:openDialog={() => (deleteTarget = null)}
     class="modal"

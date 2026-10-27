@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { JsonPadStore } from '../server/json-store';
 import { createApi } from '../server/api';
+import { importFiles } from '../src/lib/upload';
 let dir:string, file:string, store:JsonPadStore, api:ReturnType<typeof createApi>;
 beforeAll(async()=>{
  dir=await mkdtemp(join(tmpdir(),'libretto-json-test-'));
@@ -14,6 +15,51 @@ beforeAll(async()=>{
 });
 afterAll(async()=>{if(dir)await rm(dir,{recursive:true,force:true});});
 const req=(path:string,method='GET',body?:unknown,headers:Record<string,string>={})=>api(new Request('http://localhost:3001/api'+path,{method,headers:{'content-type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)}));
+test('File and folder uploads import text and preserve folder hierarchy',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rune-upload-'));
+ try {
+  const path=join(root,'data','scripts.json');const s=await JsonPadStore.open(path);const a=createApi(s);
+  const call=async (path:string,body:unknown)=>{const response=await a(new Request('http://localhost/api'+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}));expect(response.ok).toBe(true);return response.json();};
+  const imported:any[]=[];const folders:any[]=[];
+  const api={createFolder:(name:string,parent_id:string|null)=>call('/folders',{name,parent_id}),createFile:(title:string,content:string,folder_id:string|null)=>call('/pads',{title,content,folder_id}),onFolder:(folder:any)=>folders.push(folder),onFile:(pad:any)=>imported.push(pad)};
+  const file=(name:string,content:string,relative:string)=>{const result=new File([content],name);Object.defineProperty(result,'webkitRelativePath',{value:relative});return result;};
+  const result=await importFiles([file('alpha.md','First','Project/alpha.md'),file('beta.txt','Second','Project/Nested/beta.txt'),file('ignored.png','ignored','Project/ignored.png')],true,api);
+  expect(result.skipped).toBe(1);
+  expect(imported.map(p=>p.content)).toEqual(['First','Second']);expect(folders.map(f=>f.name)).toEqual(['Project','Nested']);
+  expect(folders[1].parent_id).toBe(folders[0].id);expect(imported[1].folder_id).toBe(folders[1].id);
+  await importFiles([file('standalone.md','Third','')],false,api);expect(imported[2].folder_id).toBeNull();
+  const reopened=await JsonPadStore.open(path);expect(reopened.list()).toHaveLength(3);expect(reopened.listFolders()).toHaveLength(2);
+  await importFiles([file('escaped.md','\n'.repeat(1_100_000),'')],false,api);
+  const escaped=s.list().find(p=>p.title==='escaped')!;expect(escaped.content.length).toBe(1_100_000);
+  const update=JSON.stringify({...escaped,title:'Edited escaped'});
+  const saved=await a(new Request('http://localhost/api/pads/'+escaped.id,{method:'PUT',headers:{'content-type':'application/json','content-length':String(new TextEncoder().encode(update).length)},body:update}));
+  expect(saved.status).toBe(200);expect((await JsonPadStore.open(path)).get(escaped.id)?.title).toBe('Edited escaped');
+  await expect(importFiles([file('large.md','a'.repeat(2_000_001),'')],false,api)).rejects.toThrow('2 MB');
+ } finally {await rm(root,{recursive:true,force:true});}
+});
+test('Folders and imported files persist, move, back up, restore, and reset',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rune-folders-'));
+ try {
+  const path=join(root,'data','scripts.json');const s=await JsonPadStore.open(path);const a=createApi(s);
+  const call=(path:string,method='GET',body?:unknown)=>a(new Request('http://localhost/api'+path,{method,headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)}));
+  const folder=await (await call('/folders','POST',{name:'Project',parent_id:null})).json();
+  const child=await (await call('/folders','POST',{name:'Notes',parent_id:folder.id})).json();
+  const pad=await (await call('/pads','POST',{title:'Hello',content:'Hello world',folder_id:child.id})).json();
+  expect((await JsonPadStore.open(path)).listFolders()).toHaveLength(2);
+  expect((await JsonPadStore.open(path)).get(pad.id)?.folder_id).toBe(child.id);
+  expect((await call('/pads/'+pad.id+'/move','POST',{folder_id:folder.id})).status).toBe(200);
+  const backup=await (await call('/backup')).json();expect(backup.folders).toHaveLength(2);
+  const restored=await JsonPadStore.open(join(root,'other','scripts.json'));
+  await restored.importBackup(backup);
+  const imported=restored.list()[0];const importedFolder=restored.listFolders().find(f=>f.id===imported.folder_id);
+  expect(importedFolder?.name).toBe('Project');expect(imported.content).toBe('Hello world');
+  expect((await call('/folders/'+folder.id,'PUT',{name:'Renamed'})).status).toBe(200);
+  expect((await call('/folders/'+folder.id,'DELETE')).status).toBe(204);
+  expect(s.listFolders()).toEqual([]);expect(s.get(pad.id)?.folder_id).toBeNull();
+  expect((await call('/folders','POST',{name:'Bad',parent_id:'invalid'})).status).toBe(400);
+  await s.reset();expect((await JsonPadStore.open(path)).listFolders()).toEqual([]);
+ } finally {await rm(root,{recursive:true,force:true});}
+});
 test('Reset removes active and trashed files and persists an empty library',async()=>{
  const resetDir=await mkdtemp(join(tmpdir(),'rune-reset-test-'));
  try {

@@ -1,11 +1,11 @@
 import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import type { Pad, TrashedPad } from '../src/lib/types';
+import type { Folder, Pad, TrashedPad } from '../src/lib/types';
 
 type Meta = Omit<Pad, 'content'> & { filename: string };
 type TrashedMeta = Meta & { deleted_at: string };
-type DataFile = { version: 3; scripts: Meta[]; trash: TrashedMeta[] };
-type BackupFile = { kind: 'rune-backup'; version: 1; exported_at: string; scripts: Pad[]; trash: TrashedPad[] };
+type DataFile = { version: 3; scripts: Meta[]; trash: TrashedMeta[]; folders: Folder[] };
+type BackupFile = { kind: 'rune-backup'; version: 1; exported_at: string; scripts: Pad[]; trash: TrashedPad[]; folders?: Folder[] };
 const validId = /^[0-9a-f-]{36}$/i;
 const validName = (name: unknown): name is string => typeof name === 'string' && name.endsWith('.md') && name !== '.md' && !/[\\/]/.test(name) && name !== '..md';
 const isMeta = (item: unknown): item is Omit<Meta, 'filename'> => {
@@ -23,7 +23,7 @@ export class JsonPadStore {
  readonly path: string;
  readonly savesPath: string;
  readonly trashPath: string;
- private data: DataFile = { version: 3, scripts: [], trash: [] };
+ private data: DataFile = { version: 3, scripts: [], trash: [], folders: [] };
  private contents = new Map<string, string>();
  private pending: Promise<void> = Promise.resolve();
  private constructor(path: string, savesPath?: string) {
@@ -106,7 +106,9 @@ export class JsonPadStore {
    await store.persist(store.data);
    for (const old of oldPaths) await rm(old,{force:true});
   } else {
-   store.data = {version:3,scripts:scripts as Meta[],trash:trash as TrashedMeta[]};
+   const folders=parsed.folders ?? [];
+   if (!Array.isArray(folders) || !folders.every((f:any)=>f && typeof f.id==='string' && validId.test(f.id) && typeof f.name==='string' && f.name.trim() && f.name.length<=200 && (f.parent_id===null || typeof f.parent_id==='string' && validId.test(f.parent_id)))) throw new Error(`Invalid Rune folder data: ${store.path}. Your file was left untouched.`);
+   store.data = {version:3,scripts:scripts as Meta[],trash:trash as TrashedMeta[],folders};
    for (const p of scripts as Meta[]) store.contents.set(p.id,await readFile(store.activePath(p),'utf8'));
    for (const p of trash as TrashedMeta[]) store.contents.set(p.id,await readFile(store.deletedPath(p),'utf8'));
    const obsolete:string[]=[];
@@ -123,9 +125,10 @@ export class JsonPadStore {
  private full(p: Meta): Pad { const {filename:_,...rest}=p;return {...clone(rest),content:this.contents.get(p.id) ?? ''}; }
  list(): Pad[] { return this.data.scripts.map(p=>this.full(p)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)||a.id.localeCompare(b.id)); }
  listTrash(): TrashedPad[] { return this.data.trash.map(p=>this.full(p) as TrashedPad).sort((a,b)=>b.deleted_at.localeCompare(a.deleted_at)||a.id.localeCompare(b.id)); }
+ listFolders():Folder[] { return clone(this.data.folders); }
  async backup(): Promise<BackupFile> {
   await this.pending;
-  return {kind:'rune-backup',version:1,exported_at:new Date().toISOString(),scripts:this.list(),trash:this.listTrash()};
+  return {kind:'rune-backup',version:1,exported_at:new Date().toISOString(),scripts:this.list(),trash:this.listTrash(),folders:this.listFolders()};
  }
  async importBackup(input: unknown): Promise<{scripts:number;trash:number}> {
   const backup=input as Partial<BackupFile> | null;
@@ -136,22 +139,26 @@ export class JsonPadStore {
     (p.title as string).length<=200 && (!deleted || typeof p.deleted_at==='string');
   };
   if(!backup || backup.kind!=='rune-backup' || backup.version!==1 || !Array.isArray(backup.scripts) || !Array.isArray(backup.trash) ||
-   backup.scripts.length+backup.trash.length>10000 || !backup.scripts.every(p=>validPad(p,false)) || !backup.trash.every(p=>validPad(p,true)))
+   backup.scripts.length+backup.trash.length>10000 || !backup.scripts.every(p=>validPad(p,false)) || !backup.trash.every(p=>validPad(p,true)) ||
+   (backup.folders!==undefined && (!Array.isArray(backup.folders) || backup.folders.length>10000 || !backup.folders.every(f=>f && typeof f.id==='string' && validId.test(f.id) && typeof f.name==='string' && !!f.name.trim() && f.name.length<=200 && (f.parent_id===null || typeof f.parent_id==='string' && validId.test(f.parent_id))))))
    throw new TypeError('Invalid Rune backup file.');
   const work=this.pending.then(async()=>{
    const draft=clone(this.data);
+   const folderMap=new Map<string,string>();
+   for(const folder of backup.folders ?? []) folderMap.set(folder.id,crypto.randomUUID());
+   for(const folder of backup.folders ?? []) draft.folders.push({id:folderMap.get(folder.id)!,name:folder.name,parent_id:folder.parent_id ? folderMap.get(folder.parent_id) ?? null : null});
    const created:string[]=[];
    const imported:{id:string;content:string}[]=[];
    try {
     for(const p of backup.scripts as Pad[]){
      const id=crypto.randomUUID();const filename=await this.filename(p.title);
-     const meta:Meta={...metadata(p),id,filename};
+     const meta:Meta={...metadata(p),id,filename,folder_id:p.folder_id ? folderMap.get(p.folder_id) ?? null : null};
      const path=this.activePath(meta);await this.atomicWrite(path,p.content);
      created.push(path);draft.scripts.push(meta);imported.push({id,content:p.content});
     }
     for(const p of backup.trash as TrashedPad[]){
      const id=crypto.randomUUID();const filename=await this.trashFilename(p.title);
-     const {content:_,...rest}=p;const meta:TrashedMeta={...rest,id,filename};
+     const {content:_,...rest}=p;const meta:TrashedMeta={...rest,id,filename,folder_id:p.folder_id ? folderMap.get(p.folder_id) ?? null : null};
      const path=this.deletedPath(meta);await this.atomicWrite(path,p.content);
      created.push(path);draft.trash.push(meta);imported.push({id,content:p.content});
     }
@@ -166,12 +173,34 @@ export class JsonPadStore {
  }
  get(id:string):Pad|undefined { const p=this.data.scripts.find(p=>p.id===id);return p&&this.full(p); }
  async export(id:string):Promise<string|undefined> { const p=this.data.scripts.find(p=>p.id===id);return p&&readFile(this.activePath(p),'utf8'); }
- async create():Promise<Pad> { return this.mutate(async data=>{
-  const now=new Date().toISOString();const pad:Pad={id:crypto.randomUUID(),title:'Untitled',content:'',pinned:false,revision:1,created_at:now,updated_at:now};
+ async create(input?:{title:string;content:string;folder_id:string|null}):Promise<Pad> { return this.mutate(async data=>{
+  if(input?.folder_id && !data.folders.some(f=>f.id===input.folder_id)) throw new TypeError('Folder not found.');
+  const now=new Date().toISOString();const pad:Pad={id:crypto.randomUUID(),title:input?.title.trim()||'Untitled',content:input?.content??'',folder_id:input?.folder_id??null,pinned:false,revision:1,created_at:now,updated_at:now};
   const meta={...metadata(pad),filename:await this.filename(pad.title)};
-  await this.atomicWrite(this.activePath(meta),'');data.scripts.push(meta);this.contents.set(pad.id,'');
+  await this.atomicWrite(this.activePath(meta),pad.content);data.scripts.push(meta);this.contents.set(pad.id,pad.content);
   return {changed:true,result:pad};
  }); }
+ async createFolder(name:string,parent_id:string|null):Promise<Folder> {return this.mutate(async data=>{
+  if(parent_id && !data.folders.some(f=>f.id===parent_id)) throw new TypeError('Folder not found.');
+  const folder={id:crypto.randomUUID(),name:name.trim(),parent_id};data.folders.push(folder);return {changed:true,result:folder};
+ });}
+ async renameFolder(id:string,name:string):Promise<Folder|undefined> {return this.mutate(async data=>{
+  const folder=data.folders.find(f=>f.id===id);if(!folder)return {changed:false,result:undefined};
+  folder.name=name.trim();return {changed:true,result:clone(folder)};
+ });}
+ async deleteFolder(id:string):Promise<boolean> {return this.mutate(async data=>{
+  if(!data.folders.some(f=>f.id===id))return {changed:false,result:false};
+  const removed=new Set([id]);let count=0;
+  while(count!==removed.size){count=removed.size;for(const folder of data.folders)if(folder.parent_id && removed.has(folder.parent_id))removed.add(folder.id);}
+  data.folders=data.folders.filter(f=>!removed.has(f.id));
+  for(const pad of [...data.scripts,...data.trash])if(pad.folder_id && removed.has(pad.folder_id))pad.folder_id=null;
+  return {changed:true,result:true};
+ });}
+ async movePad(id:string,folder_id:string|null):Promise<Pad|undefined> {return this.mutate(async data=>{
+  if(folder_id && !data.folders.some(f=>f.id===folder_id)) throw new TypeError('Folder not found.');
+  const pad=data.scripts.find(p=>p.id===id);if(!pad)return {changed:false,result:undefined};
+  pad.folder_id=folder_id;return {changed:true,result:this.full(pad)};
+ });}
  async update(id:string,input:Pick<Pad,'title'|'content'|'pinned'|'revision'>):Promise<{status:'saved';pad:Pad}|{status:'conflict'|'missing'}> {
   return this.mutate<{status:'saved';pad:Pad}|{status:'conflict'|'missing'}>(async data=>{
    const p=data.scripts.find(p=>p.id===id);if(!p)return {changed:false,result:{status:'missing' as const}};
@@ -210,8 +239,8 @@ export class JsonPadStore {
  }); }
  async reset():Promise<void> { return this.mutate(async data=>{
   const active=data.scripts;const deleted=data.trash;
-  data.scripts=[];data.trash=[];
-  return {changed:active.length+deleted.length>0,result:undefined,remove:[...active.map(p=>this.activePath(p)),...deleted.map(p=>this.deletedPath(p))],forget:[...active,...deleted].map(p=>p.id)};
+  const hadFolders=data.folders.length>0;data.scripts=[];data.trash=[];data.folders=[];
+  return {changed:active.length+deleted.length>0||hadFolders,result:undefined,remove:[...active.map(p=>this.activePath(p)),...deleted.map(p=>this.deletedPath(p))],forget:[...active,...deleted].map(p=>p.id)};
  }); }
  private async mutate<T>(modify:(draft:DataFile)=>Promise<{changed:boolean;result:T;remove?:string[];forget?:string[]}>):Promise<T> {
   const work=this.pending.then(async()=>{
