@@ -1580,8 +1580,9 @@
                 <h3>Padding</h3>
                 <p>Adjust the spacing around interface elements.</p>
                 <div class="settings-control-grid">
-                  <label>Padding <span>{preferences.padding}%</span><input type="range" min="20" max="100" step="5" bind:value={preferences.padding} /></label>
+                  <label class="padding-control">Padding <span>{preferences.padding}%</span><input type="range" min="20" max="100" step="5" bind:value={preferences.padding} /><span class="padding-endpoints"><span>Compact</span><span>Spacious</span></span></label>
                 </div>
+                <button class="setting-choice padding-reset" onclick={() => preferences.padding = defaultPreferences.padding}>Reset padding to default</button>
               </section>
               <section class="settings-section">
                 <h3>Interface text</h3>
@@ -1885,10 +1886,10 @@
                 : "Files"}
           </h1>
           {#if filter === "trash" && trash.length}<button
-              class="trash-bulk icon"
+              class="trash-bulk trash-button"
               onclick={() => (permanentDelete = "all")}
               aria-label="Permanently delete all files"
-              title="Permanently delete all files"><Trash2 size={18} /></button
+              title="Permanently delete all files"><Trash2 size={16} /> Empty Trash</button
             >{/if}
         </div>
         {#if filter === "trash"}
@@ -1909,11 +1910,11 @@
                     (trash.length === 1 ? " file" : " files")}</span
               >
               {#if trashSelection.length}<button
-                  class="trash-bulk icon"
+                  class="trash-bulk trash-button"
                   onclick={() => (permanentDelete = [...trashSelection])}
                   aria-label="Permanently delete selected files"
                   title="Permanently delete selected files"
-                  ><Trash2 size={18} /></button
+                  ><Trash2 size={16} /> Delete selected</button
                 >{/if}
             </div>
             <div class="trash-list">
@@ -1943,22 +1944,22 @@
                   </button>
                   <div class="trash-actions">
                     <button
-                      class="icon"
+                      class="trash-button"
                       onclick={() => (trashPreview = pad)}
                       aria-label={"Preview " + pad.title}
-                      title="Preview"><Eye size={17} /></button
+                      title="Preview"><Eye size={16} /> Preview</button
                     >
                     <button
-                      class="icon"
+                      class="trash-button"
                       onclick={() => restore(pad)}
                       aria-label={"Restore " + pad.title}
-                      title="Restore"><RotateCcw size={17} /></button
+                      title="Restore"><RotateCcw size={16} /> Restore</button
                     >
                     <button
-                      class="icon"
+                      class="trash-button"
                       onclick={() => (permanentDelete = [pad.id])}
                       aria-label={"Permanently delete " + pad.title}
-                      title="Permanently delete"><Trash2 size={17} /></button
+                      title="Permanently delete"><Trash2 size={16} /> Delete permanently</button
                     >
                   </div>
                 </div>
