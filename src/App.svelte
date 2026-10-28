@@ -153,6 +153,7 @@
       "--editor-size",
       preferences.editorSize + "px",
     );
+    document.documentElement.style.setProperty("--padding-scale", String(preferences.padding / 100));
     try {
       localStorage.setItem(preferencesKey, JSON.stringify(preferences));
     } catch {}
@@ -1574,6 +1575,13 @@
                       ? "light"
                       : "dark"}</button
                   >
+                </div>
+              </section>
+              <section class="settings-section">
+                <h3>Padding</h3>
+                <p>Adjust the spacing around interface elements.</p>
+                <div class="settings-control-grid">
+                  <label>Padding <span>{preferences.padding}%</span><input type="range" min="20" max="100" step="5" bind:value={preferences.padding} /></label>
                 </div>
               </section>
               <section class="settings-section">
