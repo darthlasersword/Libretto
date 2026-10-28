@@ -55,6 +55,16 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
      return json(await store.create(input),201);
     }
    }
+   if (url.pathname==='/api/selection' && req.method==='POST') {
+    const body=await req.json();
+    const validIds=(value:unknown):value is string[]=>Array.isArray(value) && value.length<=10000 && value.every(id=>typeof id==='string' && uuid.test(id));
+    if(!body || !validIds(body.files) || !validIds(body.folders) || !(body.files.length+body.folders.length) || !['move','delete'].includes(body.action)) return json({error:'Invalid selection'},400);
+    if(body.action==='move') {
+     if(!(body.parent_id===null || typeof body.parent_id==='string' && uuid.test(body.parent_id))) return json({error:'Invalid folder'},400);
+     await store.bulkMove(body.files,body.folders,body.parent_id);
+    } else await store.bulkDelete(body.files,body.folders);
+    return new Response(null,{status:204});
+   }
    if (url.pathname==='/api/folders') {
     if(req.method==='GET') return json(store.listFolders());
     if(req.method==='POST') {
@@ -124,6 +134,7 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
    if(error instanceof TypeError && error.message==='Invalid Rune backup file.') return json({error:error.message},400);
    if(error instanceof TypeError && error.message==='Folder not found.') return json({error:error.message},400);
    if(error instanceof TypeError && error.message==='Invalid folder destination.') return json({error:error.message},400);
+   if(error instanceof TypeError && error.message==='Selection not found.') return json({error:error.message},400);
    console.error('API request failed',error);
    return json({error:'Unable to access the saved file. Your draft is still in this window.'},503);
   }

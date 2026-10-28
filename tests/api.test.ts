@@ -61,9 +61,28 @@ test('Folders and imported files persist, move, back up, restore, and reset',asy
   expect(importedFolder?.name).toBe('Project');expect(imported.content).toBe('Hello world');
   expect((await call('/folders/'+folder.id,'PUT',{name:'Renamed'})).status).toBe(200);
   expect((await call('/folders/'+folder.id,'DELETE')).status).toBe(204);
-  expect(s.listFolders()).toEqual([]);expect(s.get(pad.id)?.folder_id).toBeNull();
+  expect(s.listFolders()).toEqual([]);expect(s.get(pad.id)).toBeUndefined();expect(s.listTrash().find(p=>p.id===pad.id)?.folder_id).toBeNull();
   expect((await call('/folders','POST',{name:'Bad',parent_id:'invalid'})).status).toBe(400);
   await s.reset();expect((await JsonPadStore.open(path)).listFolders()).toEqual([]);
+ } finally {await rm(root,{recursive:true,force:true});}
+});
+test('Bulk selection moves hierarchies and deletes descendants into Trash',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rune-selection-'));
+ try {
+  const path=join(root,'scripts.json');const s=await JsonPadStore.open(path);const a=createApi(s);
+  const call=(path:string,method='GET',body?:unknown)=>a(new Request('http://localhost/api'+path,{method,headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)}));
+  const parent=await s.createFolder('Parent',null), child=await s.createFolder('Child',parent.id), destination=await s.createFolder('Destination',null);
+  const nested=await s.create({title:'Nested',content:'kept',folder_id:child.id}), loose=await s.create({title:'Loose',content:'other',folder_id:null});
+  expect((await call('/selection','POST',{action:'move',files:[nested.id,loose.id],folders:[parent.id,child.id],parent_id:child.id})).status).toBe(400);
+  expect((await call('/selection','POST',{action:'move',files:[nested.id,loose.id],folders:[parent.id,child.id],parent_id:destination.id})).status).toBe(204);
+  expect(s.listFolders().find(f=>f.id===parent.id)?.parent_id).toBe(destination.id);
+  expect(s.listFolders().find(f=>f.id===child.id)?.parent_id).toBe(parent.id);
+  expect(s.get(nested.id)?.folder_id).toBe(child.id);expect(s.get(loose.id)?.folder_id).toBe(destination.id);
+  expect((await call('/selection','POST',{action:'delete',files:[nested.id],folders:[parent.id,child.id]})).status).toBe(204);
+  expect(s.get(nested.id)).toBeUndefined();expect(s.get(loose.id)).toBeDefined();
+  expect(s.listFolders().map(f=>f.id)).toEqual([destination.id]);
+  const reopened=await JsonPadStore.open(path);expect(reopened.listTrash().find(p=>p.id===nested.id)?.content).toBe('kept');
+  expect((await reopened.restore(nested.id))?.folder_id).toBeNull();
  } finally {await rm(root,{recursive:true,force:true});}
 });
 test('Reset removes active and trashed files and persists an empty library',async()=>{

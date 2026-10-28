@@ -196,13 +196,36 @@ export class JsonPadStore {
   while(parent){if(parent.id===id || seen.has(parent.id)) throw new TypeError('Invalid folder destination.');seen.add(parent.id);parent=parent.parent_id ? data.folders.find(f=>f.id===parent!.parent_id) : undefined;}
   folder.parent_id=parent_id;return {changed:true,result:clone(folder)};
  });}
- async deleteFolder(id:string):Promise<boolean> {return this.mutate(async data=>{
-  if(!data.folders.some(f=>f.id===id))return {changed:false,result:false};
-  const removed=new Set([id]);let count=0;
-  while(count!==removed.size){count=removed.size;for(const folder of data.folders)if(folder.parent_id && removed.has(folder.parent_id))removed.add(folder.id);}
-  data.folders=data.folders.filter(f=>!removed.has(f.id));
-  for(const pad of [...data.scripts,...data.trash])if(pad.folder_id && removed.has(pad.folder_id))pad.folder_id=null;
-  return {changed:true,result:true};
+ async deleteFolder(id:string):Promise<boolean> {
+  if(!this.data.folders.some(f=>f.id===id)) return false;
+  await this.bulkDelete([], [id]); return true;
+ }
+ private folderTree(data:DataFile, folderIds:string[]):Set<string> {
+  const ids=new Set(folderIds);let count=-1;
+  while(count!==ids.size){count=ids.size;for(const f of data.folders)if(f.parent_id && ids.has(f.parent_id))ids.add(f.id);}
+  return ids;
+ }
+ async bulkMove(fileIds:string[],folderIds:string[],parent_id:string|null):Promise<void> {return this.mutate(async data=>{
+  const selectedFolders=new Set(folderIds), selectedFiles=new Set(fileIds);
+  if(folderIds.some(id=>!data.folders.some(f=>f.id===id)) || fileIds.some(id=>!data.scripts.some(p=>p.id===id))) throw new TypeError('Selection not found.');
+  if(parent_id && !data.folders.some(f=>f.id===parent_id)) throw new TypeError('Folder not found.');
+  const tree=this.folderTree(data,folderIds);
+  if(parent_id && tree.has(parent_id)) throw new TypeError('Invalid folder destination.');
+  for(const f of data.folders) if(selectedFolders.has(f.id) && (!f.parent_id || !tree.has(f.parent_id))) f.parent_id=parent_id;
+  for(const p of data.scripts) if(selectedFiles.has(p.id) && (!p.folder_id || !tree.has(p.folder_id))) p.folder_id=parent_id;
+  return {changed:!!(fileIds.length||folderIds.length),result:undefined};
+ });}
+ async bulkDelete(fileIds:string[],folderIds:string[]):Promise<void> {return this.mutate(async data=>{
+  if(folderIds.some(id=>!data.folders.some(f=>f.id===id)) || fileIds.some(id=>!data.scripts.some(p=>p.id===id))) throw new TypeError('Selection not found.');
+  const removedFolders=this.folderTree(data,folderIds), selectedFiles=new Set(fileIds);
+  const removed=data.scripts.filter(p=>selectedFiles.has(p.id) || !!p.folder_id && removedFolders.has(p.folder_id));
+  const created:string[]=[]; const deletedAt=new Date().toISOString();
+  try {
+   for(const p of removed){const filename=await this.trashFilename(p.title);const path=join(this.trashPath,filename);await this.atomicWrite(path,this.contents.get(p.id)??'');created.push(path);data.trash.push({...p,filename,folder_id:null,deleted_at:deletedAt});}
+  } catch(e) { for(const path of created) await rm(path,{force:true}).catch(()=>{}); throw e; }
+  data.scripts=data.scripts.filter(p=>!removed.includes(p));data.folders=data.folders.filter(f=>!removedFolders.has(f.id));
+  for(const p of data.trash)if(p.folder_id && removedFolders.has(p.folder_id))p.folder_id=null;
+  return {changed:!!(removed.length||removedFolders.size),result:undefined,remove:removed.map(p=>this.activePath(p)),rollback:created};
  });}
  async movePad(id:string,folder_id:string|null):Promise<Pad|undefined> {return this.mutate(async data=>{
   if(folder_id && !data.folders.some(f=>f.id===folder_id)) throw new TypeError('Folder not found.');
@@ -250,10 +273,10 @@ export class JsonPadStore {
   const hadFolders=data.folders.length>0;data.scripts=[];data.trash=[];data.folders=[];
   return {changed:active.length+deleted.length>0||hadFolders,result:undefined,remove:[...active.map(p=>this.activePath(p)),...deleted.map(p=>this.deletedPath(p))],forget:[...active,...deleted].map(p=>p.id)};
  }); }
- private async mutate<T>(modify:(draft:DataFile)=>Promise<{changed:boolean;result:T;remove?:string[];forget?:string[]}>):Promise<T> {
+ private async mutate<T>(modify:(draft:DataFile)=>Promise<{changed:boolean;result:T;remove?:string[];forget?:string[];rollback?:string[]}>):Promise<T> {
   const work=this.pending.then(async()=>{
-   const draft=clone(this.data);const {changed,result,remove,forget}=await modify(draft);
-   if(changed){await this.persist(draft);this.data=draft;
+   const draft=clone(this.data);const {changed,result,remove,forget,rollback}=await modify(draft);
+   if(changed){try { await this.persist(draft); } catch(error) { for(const path of rollback??[]) await rm(path,{force:true}).catch(()=>{}); throw error; } this.data=draft;
     for(const path of remove??[]) await rm(path,{force:true});
     for(const id of forget??[]) this.contents.delete(id);
    }return result;

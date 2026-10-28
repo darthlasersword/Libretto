@@ -62,6 +62,10 @@
   let folderMenu: string | null = null;
   let sidebarFileMenu: string | null = null;
   let folderParent: string | null = null;
+  let selecting = false;
+  let selectedFiles: string[] = [];
+  let selectedFolders: string[] = [];
+  let selectionBusy = false;
   let uploadBusy = false;
   let folderDialogOpen = false;
   let folderName = "";
@@ -732,24 +736,33 @@
     return true;
   }
   async function deleteFolder(folder: Folder) {
+    await applySelection("delete", [], [folder.id]);
+  }
+  function toggleSelection(id: string, kind: "file" | "folder") {
+    if (kind === "file") selectedFiles = selectedFiles.includes(id) ? selectedFiles.filter(item => item !== id) : [...selectedFiles, id];
+    else selectedFolders = selectedFolders.includes(id) ? selectedFolders.filter(item => item !== id) : [...selectedFolders, id];
+  }
+  async function applySelection(action: "move" | "delete", files = selectedFiles, folderIds = selectedFolders, destination: string | null = null) {
+    if (selectionBusy || !(files.length + folderIds.length)) return;
+    if (action === "delete" && !confirm(`Move selected files and all files inside selected folders to Trash? Selected folders and their subfolders will be removed. Restored files return to Files.`)) return;
     if (active && !(await flush())) return;
-    if (
-      !confirm(
-        `Delete folder “${folder.name}” and its subfolders? Files will be moved to the library.`,
-      )
-    )
-      return;
+    selectionBusy = true;
     try {
-      await request("/folders/" + folder.id, { method: "DELETE" });
-      await load();
+      await request("/selection", { method: "POST", body: JSON.stringify({ action, files, folders: folderIds, parent_id: destination }) });
+      const [nextPads, nextFolders, nextTrash]: [Pad[], Folder[], TrashedPad[]] = await Promise.all([request("/pads"), request("/folders"), request("/trash")]);
+      pads = nextPads; folders = nextFolders; trash = nextTrash;
+      openIds = openIds.filter(id => pads.some(p => p.id === id));
+      expandedFolders = expandedFolders.filter(id => folders.some(f => f.id === id));
       if (active) {
-        const refreshed = pads.find((p) => p.id === active?.id);
+        const refreshed = pads.find(p => p.id === active?.id);
         if (refreshed) active = { ...refreshed };
+        else { active = null; dirty = false; focus = false; menu = false; titleEditing = false; }
       }
-      expandedFolders = expandedFolders.filter((id) => folders.some((f) => f.id === id));
-    } catch (e) {
-      showNotice("Unable to delete folder: " + (e as Error).message);
-    }
+      if (destination) expandFolderPath(destination);
+      selectedFiles = []; selectedFolders = []; selecting = false;
+      showNotice(action === "delete" ? "Files moved to Trash." : "Selection moved.");
+    } catch (e) { showNotice("Unable to " + action + " selection: " + (e as Error).message); }
+    finally { selectionBusy = false; }
   }
   async function uploadFiles(event: Event, withFolders: boolean) {
     const input = event.currentTarget as HTMLInputElement;
@@ -1445,9 +1458,23 @@
         ><Trash2 size={16} /> Trash <span>{trash.length}</span></button
       >
     </nav>
+    <div class="sidebar-selection-header">
+      <span>Files and folders</span><button onclick={() => { selecting = !selecting; selectedFiles = []; selectedFolders = []; }} aria-pressed={selecting}>{selecting ? "Done" : "Select"}</button>
+    </div>
+    {#if selecting}
+      <div class="sidebar-selection-actions">
+        <span>{selectedFiles.length + selectedFolders.length} selected</span>
+        <button disabled={selectionBusy || !(selectedFiles.length + selectedFolders.length)} onclick={() => applySelection("delete")}>Delete</button>
+        <label>Move to <select aria-label="Move selected items to" value="choose" disabled={selectionBusy || !(selectedFiles.length + selectedFolders.length)} onchange={(event) => { const value = event.currentTarget.value; event.currentTarget.value = "choose"; if (value !== "choose") void applySelection("move", selectedFiles, selectedFolders, value || null); }}>
+          <option value="choose" disabled>Choose destination…</option><option value="">Files</option>
+          {#each folders.filter(f => selectedFolders.every(id => { const selected = folders.find(item => item.id === id); return selected ? canMoveFolder(selected, f) : false; })) as destination (destination.id)}<option value={destination.id}>{filePath({ title: destination.name, folder_id: destination.parent_id }, folders)}</option>{/each}
+        </select></label>
+      </div>
+    {/if}
     <div class="script-list">
       {#snippet sidebarFile(pad: Pad, depth: number)}
         <div class="sidebar-file" class:current={active?.id === pad.id && !settingsOpen} style:padding-left={depth * 16 + 8 + "px"}>
+          {#if selecting}<input class="sidebar-select" type="checkbox" aria-label={"Select file " + (pad.title || "Untitled")} checked={selectedFiles.includes(pad.id)} onchange={() => toggleSelection(pad.id, "file")} />{/if}
           {#if renameId === pad.id && renameSource === "sidebar"}
             <input bind:this={renameInput} class="sidebar-rename" bind:value={renameValue} maxlength="200" aria-label={"Rename " + pad.title} onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitRename(pad.id); } else if (e.key === "Escape") { e.preventDefault(); cancelRename(); } }} onblur={() => commitRename(pad.id)} />
           {:else}
@@ -1474,6 +1501,7 @@
       {/snippet}
       {#each folderRows as row (row.folder.id)}
         <div class="folder-row" style:padding-left={row.depth * 16 + 5 + "px"}>
+          {#if selecting}<input class="sidebar-select" type="checkbox" aria-label={"Select folder " + row.folder.name} checked={selectedFolders.includes(row.folder.id)} onchange={() => toggleSelection(row.folder.id, "folder")} />{/if}
           <button
             class="folder-toggle"
             aria-expanded={expandedFolders.includes(row.folder.id)}
@@ -1926,7 +1954,7 @@
               onclick={() => (permanentDelete = "all")}
               aria-label="Permanently delete all files"
               title="Permanently delete all files"><Trash2 size={16} /> Empty Trash</button
-            >{/if}
+            >{:else if filter !== "trash"}<button class="dashboard-select-button" aria-pressed={selecting} onclick={() => { selecting = !selecting; selectedFiles = []; selectedFolders = []; }}>{selecting ? "Done selecting" : "Select files"}</button>{/if}
         </div>
         {#if filter === "trash"}
           {#if error}<div class="error-banner" role="alert">
@@ -2003,6 +2031,17 @@
             </div>
           {/if}
         {:else}
+          {#if selecting}
+            <div class="dashboard-selection-actions" aria-label="Selected items actions">
+              <span>{selectedFiles.length} files{selectedFolders.length ? ` and ${selectedFolders.length} folders` : ""} selected</span>
+              <button disabled={!visible.length || selectionBusy} onclick={() => { const ids = new Set(visible.map(p => p.id)); selectedFiles = visible.every(p => selectedFiles.includes(p.id)) ? selectedFiles.filter(id => !ids.has(id)) : [...new Set([...selectedFiles, ...ids])]; }}>{visible.length && visible.every(p => selectedFiles.includes(p.id)) ? "Deselect visible" : "Select visible"}</button>
+              <button disabled={selectionBusy || !(selectedFiles.length + selectedFolders.length)} onclick={() => applySelection("delete")}>Delete</button>
+              <label>Move to <select aria-label="Move selected items to" value="choose" disabled={selectionBusy || !(selectedFiles.length + selectedFolders.length)} onchange={(event) => { const value = event.currentTarget.value; event.currentTarget.value = "choose"; if (value !== "choose") void applySelection("move", selectedFiles, selectedFolders, value || null); }}>
+                <option value="choose" disabled>Choose destination…</option><option value="">Files</option>
+                {#each folders.filter(f => selectedFolders.every(id => { const selected = folders.find(item => item.id === id); return selected ? canMoveFolder(selected, f) : false; })) as destination (destination.id)}<option value={destination.id}>{filePath({ title: destination.name, folder_id: destination.parent_id }, folders)}</option>{/each}
+              </select></label>
+            </div>
+          {/if}
           <div class="library-toolbar">
             <label class="search-box"
               ><Search size={16} /><input
@@ -2099,9 +2138,12 @@
                       <div
                         class="pad-card"
                         class:selected={selectedId === pad.id}
+                        class:bulk-selected={selecting && selectedFiles.includes(pad.id)}
+                        class:selection-mode={selecting}
                         data-pad-id={pad.id}
                       >
-                        <button class="pad-open" onclick={() => open(pad)}
+                        {#if selecting}<input class="dashboard-file-select" type="checkbox" aria-label={"Select file " + (pad.title || "Untitled")} checked={selectedFiles.includes(pad.id)} onchange={() => toggleSelection(pad.id, "file")} />{/if}
+                        <button class="pad-open" onclick={() => selecting ? toggleSelection(pad.id, "file") : open(pad)}
                           ><FileText class="card-file-icon" size={25} />
                           <h3>{pad.title}</h3>
                           <span
@@ -2136,7 +2178,7 @@
                               }
                             }}
                           />{/if}
-                        <button
+                        {#if !selecting}<button
                           class="card-pin icon"
                           class:filled={pad.pinned}
                           onclick={() => pin(pad)}
@@ -2165,7 +2207,7 @@
                                 onclick={() => movePad(pad, folder.id)}
                                 >{folder.name}</button
                               >{/each}
-                          </div>{/if}
+                          </div>{/if}{/if}
                       </div>
                     {/each}
                   </div>
