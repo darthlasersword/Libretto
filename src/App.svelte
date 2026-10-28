@@ -1492,10 +1492,10 @@
         ><Settings size={16} /> Settings</button
       >
       <button
-        class="icon"
+        class="shortcuts-button"
         onclick={() => (shortcutsOpen = true)}
         aria-label="Keyboard shortcuts"
-        title="Keyboard shortcuts · Ctrl/⌘ + /"><Keyboard size={16} /></button
+        title="Keyboard shortcuts · Ctrl/⌘ + /"><Keyboard size={16} /> Shortcuts</button
       >
       <button
         class="icon"
