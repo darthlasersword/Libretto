@@ -60,6 +60,8 @@
   let expandedFolders: string[] = [];
   let cardMenu: string | null = null;
   let folderMenu: string | null = null;
+  let sidebarFileMenu: string | null = null;
+  let folderParent: string | null = null;
   let uploadBusy = false;
   let folderDialogOpen = false;
   let folderName = "";
@@ -287,9 +289,7 @@
         return edited || a.title.localeCompare(b.title);
     }
   }
-  $: sidebarPads = [...pads].sort((a, b) =>
-    comparePads(a, b, "opened", recentIds),
-  );
+  $: sidebarPads = [...pads].sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base", numeric: true }));
   $: folderRows = flattenFolders(folders, expandedFolders);
   function flattenFolders(items: Folder[], expanded: string[]) {
     const rows: { folder: Folder; depth: number }[] = [];
@@ -304,6 +304,17 @@
     };
     visit(null, 0, new Set());
     return rows;
+  }
+  function expandFolderPath(id: string) {
+    const expanded = new Set(expandedFolders);
+    let current: string | null = id;
+    const seen = new Set<string>();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      expanded.add(current);
+      current = folders.find((f) => f.id === current)?.parent_id ?? null;
+    }
+    expandedFolders = [...expanded];
   }
   $: visible = pads
     .filter(
@@ -653,13 +664,14 @@
     trashSelection = [];
     if (innerWidth <= 760) sidebar = false;
   }
-  async function create() {
+  async function create(folderId: string | null = null) {
     if (creating) return;
     if (active && !(await flush())) return;
     creating = true;
     try {
-      const pad = await request("/pads", { method: "POST" });
+      const pad = await request("/pads", { method: "POST", body: JSON.stringify({ title: "Untitled", content: "", folder_id: folderId }) });
       pads = [pad, ...pads];
+      if (folderId) expandedFolders = [...new Set([...expandedFolders, folderId])];
       await open(pad);
       await editTitle();
     } catch (e) {
@@ -676,10 +688,11 @@
     try {
       const folder: Folder = await request("/folders", {
         method: "POST",
-        body: JSON.stringify({ name, parent_id: null }),
+        body: JSON.stringify({ name, parent_id: folderParent }),
       });
       folders = [...folders, folder];
       expandedFolders = [...expandedFolders, folder.id];
+      if (folderParent) expandedFolders = [...new Set([...expandedFolders, folderParent])];
       folderDialogOpen = false;
     } catch (e) {
       folderError = "Unable to create folder: " + (e as Error).message;
@@ -700,7 +713,26 @@
       showNotice("Unable to rename folder: " + (e as Error).message);
     }
   }
+  async function moveFolder(folder: Folder, parentId: string | null) {
+    try {
+      const updated: Folder = await request("/folders/" + folder.id + "/move", { method: "POST", body: JSON.stringify({ parent_id: parentId }) });
+      folders = folders.map((f) => f.id === updated.id ? updated : f);
+      if (parentId) expandFolderPath(parentId);
+      folderMenu = null;
+    } catch (e) { showNotice("Unable to move folder: " + (e as Error).message); }
+  }
+  function canMoveFolder(folder: Folder, destination: Folder) {
+    let current: Folder | undefined = destination;
+    const seen = new Set<string>();
+    while (current && !seen.has(current.id)) {
+      if (current.id === folder.id) return false;
+      seen.add(current.id);
+      current = folders.find((f) => f.id === current?.parent_id);
+    }
+    return true;
+  }
   async function deleteFolder(folder: Folder) {
+    if (active && !(await flush())) return;
     if (
       !confirm(
         `Delete folder “${folder.name}” and its subfolders? Files will be moved to the library.`,
@@ -710,6 +742,11 @@
     try {
       await request("/folders/" + folder.id, { method: "DELETE" });
       await load();
+      if (active) {
+        const refreshed = pads.find((p) => p.id === active?.id);
+        if (refreshed) active = { ...refreshed };
+      }
+      expandedFolders = expandedFolders.filter((id) => folders.some((f) => f.id === id));
     } catch (e) {
       showNotice("Unable to delete folder: " + (e as Error).message);
     }
@@ -757,15 +794,17 @@
     }
   }
   async function movePad(pad: Pad, folder_id: string | null) {
+    if (active?.id === pad.id && !(await flush())) return;
     try {
       const moved: Pad = await request("/pads/" + pad.id + "/move", {
         method: "POST",
         body: JSON.stringify({ folder_id }),
       });
       pads = pads.map((p) => (p.id === moved.id ? moved : p));
-      if (folder_id)
-        expandedFolders = [...new Set([...expandedFolders, folder_id])];
+      if (active?.id === moved.id) active = { ...moved };
+      if (folder_id) expandFolderPath(folder_id);
       cardMenu = null;
+      sidebarFileMenu = null;
     } catch (e) {
       showNotice("Unable to move file: " + (e as Error).message);
     }
@@ -1081,10 +1120,23 @@
     const target = event.target as Element;
     if (cardMenu && !target.closest(".card-menu, .card-more")) cardMenu = null;
     if (folderMenu && !target.closest(".folder-menu, .folder-more")) folderMenu = null;
+    if (sidebarFileMenu && !target.closest(".sidebar-file-menu, .sidebar-file-more")) sidebarFileMenu = null;
     if (menu && menuAnchor && !menuAnchor.contains(event.target as Node))
       menu = false;
     if (sortMenu && sortAnchor && !sortAnchor.contains(event.target as Node))
       sortMenu = false;
+  }
+  function sidebarMenuPosition(node: HTMLElement) {
+    const position = () => {
+      const anchor = node.parentElement?.getBoundingClientRect();
+      if (!anchor) return;
+      node.style.left = `${Math.max(8, Math.min(anchor.right - node.offsetWidth, innerWidth - node.offsetWidth - 8))}px`;
+      node.style.top = `${Math.max(8, Math.min(anchor.bottom, innerHeight - node.offsetHeight - 8))}px`;
+    };
+    position();
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return { destroy() { window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); } };
   }
   function focusFromPaper(event: PointerEvent) {
     if (
@@ -1154,6 +1206,7 @@
         folderMenu = null;
         return;
       }
+      if (sidebarFileMenu) { sidebarFileMenu = null; return; }
       if (settingsOpen) {
         settingsOpen = false;
         return;
@@ -1347,12 +1400,13 @@
       >
     {/if}
     <div class="create-grid">
-      <button onclick={create} disabled={creating}
+      <button onclick={() => create()} disabled={creating}
         ><FilePlus size={17} /> New file</button
       >
       <button
         onclick={() => {
           folderName = "";
+          folderParent = null;
           folderError = "";
           folderDialogOpen = true;
         }}><FolderPlus size={17} /> New folder</button
@@ -1392,6 +1446,32 @@
       >
     </nav>
     <div class="script-list">
+      {#snippet sidebarFile(pad: Pad, depth: number)}
+        <div class="sidebar-file" class:current={active?.id === pad.id && !settingsOpen} style:padding-left={depth * 16 + 8 + "px"}>
+          {#if renameId === pad.id && renameSource === "sidebar"}
+            <input bind:this={renameInput} class="sidebar-rename" bind:value={renameValue} maxlength="200" aria-label={"Rename " + pad.title} onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitRename(pad.id); } else if (e.key === "Escape") { e.preventDefault(); cancelRename(); } }} onblur={() => commitRename(pad.id)} />
+          {:else}
+            <FileText size={16} />
+            <button class="script-open" onclick={() => open(pad)} title={pad.title || "Untitled"}><span>{pad.title || "Untitled"}</span></button>
+            {#if pad.pinned}<Pin class="sidebar-pin" size={13} fill="currentColor" />{/if}
+            <button class="sidebar-file-more icon" aria-label={"Actions for file " + (pad.title || "Untitled")} aria-expanded={sidebarFileMenu === pad.id} title="File actions" onclick={() => sidebarFileMenu = sidebarFileMenu === pad.id ? null : pad.id}><MoreVertical size={16} /></button>
+            {#if sidebarFileMenu === pad.id}
+              <div class="sidebar-file-menu" use:sidebarMenuPosition role="group" aria-label={"Actions for file " + (pad.title || "Untitled")}>
+                <button onclick={() => { sidebarFileMenu = null; beginRename(pad); }}><Pencil size={15} /> Rename</button>
+                <button onclick={() => { sidebarFileMenu = null; pin(pad); }}><Pin size={15} /> {pad.pinned ? "Unpin" : "Pin"}</button>
+                <button onclick={() => { sidebarFileMenu = null; requestTrash(pad); }}><Trash2 size={15} /> Move to Trash</button>
+                <label class="sidebar-move-label">Move to
+                  <select aria-label={"Move " + (pad.title || "Untitled") + " to"} value="choose" onchange={(event) => { const destination = event.currentTarget.value; event.currentTarget.value = "choose"; if (destination !== "choose") void movePad(pad, destination || null); }}>
+                    <option value="choose" disabled>Choose a folder…</option>
+                    <option value="" disabled={!pad.folder_id}>Files</option>
+                    {#each folders as folder (folder.id)}<option value={folder.id} disabled={pad.folder_id === folder.id}>{filePath({title: folder.name, folder_id: folder.parent_id}, folders)}</option>{/each}
+                  </select>
+                </label>
+              </div>
+            {/if}
+          {/if}
+        </div>
+      {/snippet}
       {#each folderRows as row (row.folder.id)}
         <div class="folder-row" style:padding-left={row.depth * 16 + 5 + "px"}>
           <button
@@ -1411,73 +1491,29 @@
           </button>
           <button class="folder-more icon" aria-label={"Actions for folder " + row.folder.name} aria-expanded={folderMenu === row.folder.id} title="Folder actions" onclick={() => folderMenu = folderMenu === row.folder.id ? null : row.folder.id}><MoreVertical size={17} /></button>
           {#if folderMenu === row.folder.id}
-            <div class="folder-menu" role="group" aria-label={"Actions for folder " + row.folder.name}>
+            <div class="folder-menu" use:sidebarMenuPosition role="group" aria-label={"Actions for folder " + row.folder.name}>
+              <button onclick={() => { folderMenu = null; create(row.folder.id); }}><FilePlus size={15} /> New file</button>
+              <button onclick={() => { folderMenu = null; folderParent = row.folder.id; folderName = ""; folderError = ""; folderDialogOpen = true; }}><FolderPlus size={15} /> New subfolder</button>
               <button onclick={() => { folderMenu = null; renameFolder(row.folder); }}><Pencil size={15} /> Rename folder</button>
               <button onclick={() => { folderMenu = null; deleteFolder(row.folder); }}><Trash2 size={15} /> Delete folder</button>
+              <label class="sidebar-move-label">Move to
+                <select aria-label={"Move folder " + row.folder.name + " to"} value="choose" onchange={(event) => { const destination = event.currentTarget.value; event.currentTarget.value = "choose"; if (destination !== "choose") void moveFolder(row.folder, destination || null); }}>
+                  <option value="choose" disabled>Choose a folder…</option>
+                  <option value="" disabled={!row.folder.parent_id}>Files</option>
+                  {#each folders.filter((f) => canMoveFolder(row.folder, f)) as destination (destination.id)}<option value={destination.id} disabled={row.folder.parent_id === destination.id}>{filePath({title: destination.name, folder_id: destination.parent_id}, folders)}</option>{/each}
+                </select>
+              </label>
             </div>
           {/if}
         </div>
         {#if expandedFolders.includes(row.folder.id)}
           {#each sidebarPads.filter((p) => p.folder_id === row.folder.id) as pad (pad.id)}
-            <div
-              class:current={active?.id === pad.id && !settingsOpen}
-              class="folder-file"
-              style:padding-left={row.depth * 16 + 28 + "px"}
-            >
-              <FileText size={16} /><button
-                class="script-open"
-                onclick={() => open(pad)}
-                ><span>{pad.title || "Untitled"}</span></button
-              >{#if pad.pinned}<Pin size={14} fill="currentColor" />{/if}
-            </div>
+            {@render sidebarFile(pad, row.depth + 1)}
           {/each}
         {/if}
       {/each}
       {#each sidebarPads.filter((p) => !p.folder_id || !folders.some((f) => f.id === p.folder_id)) as pad (pad.id)}
-        <div
-          class:current={active?.id === pad.id && !settingsOpen}
-          class="script-row"
-        >
-          {#if renameId === pad.id && renameSource === "sidebar"}
-            <input
-              bind:this={renameInput}
-              class="sidebar-rename"
-              bind:value={renameValue}
-              maxlength="200"
-              aria-label={"Rename " + pad.title}
-              onkeydown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  commitRename(pad.id);
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  cancelRename();
-                }
-              }}
-              onblur={() => commitRename(pad.id)}
-            />
-          {:else}
-            <FileText size={16} />
-            <button
-              class="script-open"
-              onclick={() => open(pad)}
-              ><span>{pad.title || "Untitled"}</span></button
-            >
-            <button
-              class="row-action"
-              aria-label={"Rename " + pad.title}
-              title="Rename"
-              onclick={() => beginRename(pad)}><Pencil size={13} /></button
-            >
-            <button
-              class="row-action"
-              aria-label={"Delete " + pad.title}
-              title="Delete"
-              onclick={() => requestTrash(pad)}><Trash2 size={13} /></button
-            >
-          {/if}
-        </div>
+        {@render sidebarFile(pad, 0)}
       {/each}
     </div>
     {#if error}<div class="sidebar-error" role="alert">{error}</div>{/if}
@@ -2162,6 +2198,7 @@
     aria-label="New folder"
   >
     <h2>New folder</h2>
+    {#if folderParent}<p>Inside {folders.find((f) => f.id === folderParent)?.name}</p>{/if}
     <form
       onsubmit={(event) => {
         event.preventDefault();

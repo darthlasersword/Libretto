@@ -188,6 +188,14 @@ export class JsonPadStore {
   const folder=data.folders.find(f=>f.id===id);if(!folder)return {changed:false,result:undefined};
   folder.name=name.trim();return {changed:true,result:clone(folder)};
  });}
+ async moveFolder(id:string,parent_id:string|null):Promise<Folder|undefined> {return this.mutate(async data=>{
+  const folder=data.folders.find(f=>f.id===id);if(!folder)return {changed:false,result:undefined};
+  let parent=parent_id ? data.folders.find(f=>f.id===parent_id) : undefined;
+  if(parent_id && !parent) throw new TypeError('Folder not found.');
+  const seen=new Set<string>();
+  while(parent){if(parent.id===id || seen.has(parent.id)) throw new TypeError('Invalid folder destination.');seen.add(parent.id);parent=parent.parent_id ? data.folders.find(f=>f.id===parent!.parent_id) : undefined;}
+  folder.parent_id=parent_id;return {changed:true,result:clone(folder)};
+ });}
  async deleteFolder(id:string):Promise<boolean> {return this.mutate(async data=>{
   if(!data.folders.some(f=>f.id===id))return {changed:false,result:false};
   const removed=new Set([id]);let count=0;

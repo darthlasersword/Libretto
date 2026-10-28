@@ -63,6 +63,12 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
      return json(await store.createFolder(body.name,body.parent_id),201);
     }
    }
+   const moveFolderId=url.pathname.match(/^\/api\/folders\/([^/]+)\/move$/)?.[1];
+   if(moveFolderId && uuid.test(moveFolderId) && req.method==='POST') {
+    const body=await req.json();
+    if(!body || !(body.parent_id===null || typeof body.parent_id==='string' && uuid.test(body.parent_id))) return json({error:'Invalid folder'},400);
+    const folder=await store.moveFolder(moveFolderId,body.parent_id);return folder?json(folder):json({error:'Folder not found'},404);
+   }
    const folderId=url.pathname.match(/^\/api\/folders\/([^/]+)$/)?.[1];
    if(folderId && uuid.test(folderId)) {
     if(req.method==='DELETE') return await store.deleteFolder(folderId)?new Response(null,{status:204}):json({error:'Folder not found'},404);
@@ -117,6 +123,7 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
    if(error instanceof SyntaxError) return json({error:'Invalid JSON'},400);
    if(error instanceof TypeError && error.message==='Invalid Rune backup file.') return json({error:error.message},400);
    if(error instanceof TypeError && error.message==='Folder not found.') return json({error:error.message},400);
+   if(error instanceof TypeError && error.message==='Invalid folder destination.') return json({error:error.message},400);
    console.error('API request failed',error);
    return json({error:'Unable to access the saved file. Your draft is still in this window.'},503);
   }

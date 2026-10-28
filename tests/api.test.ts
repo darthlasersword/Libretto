@@ -44,6 +44,12 @@ test('Folders and imported files persist, move, back up, restore, and reset',asy
   const call=(path:string,method='GET',body?:unknown)=>a(new Request('http://localhost/api'+path,{method,headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)}));
   const folder=await (await call('/folders','POST',{name:'Project',parent_id:null})).json();
   const child=await (await call('/folders','POST',{name:'Notes',parent_id:folder.id})).json();
+  const destination=await (await call('/folders','POST',{name:'Other',parent_id:null})).json();
+  expect((await call('/folders/'+folder.id+'/move','POST',{parent_id:child.id})).status).toBe(400);
+  expect((await call('/folders/'+child.id+'/move','POST',{parent_id:destination.id})).status).toBe(200);
+  expect((await JsonPadStore.open(path)).listFolders().find(f=>f.id===child.id)?.parent_id).toBe(destination.id);
+  expect((await call('/folders/'+child.id+'/move','POST',{parent_id:folder.id})).status).toBe(200);
+  expect((await call('/folders/'+destination.id,'DELETE')).status).toBe(204);
   const pad=await (await call('/pads','POST',{title:'Hello',content:'Hello world',folder_id:child.id})).json();
   expect((await JsonPadStore.open(path)).listFolders()).toHaveLength(2);
   expect((await JsonPadStore.open(path)).get(pad.id)?.folder_id).toBe(child.id);
