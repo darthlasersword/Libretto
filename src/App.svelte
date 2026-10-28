@@ -59,6 +59,7 @@
   let folders: Folder[] = [];
   let expandedFolders: string[] = [];
   let cardMenu: string | null = null;
+  let folderMenu: string | null = null;
   let uploadBusy = false;
   let folderDialogOpen = false;
   let folderName = "";
@@ -1079,6 +1080,7 @@
   function clickOutsideMenu(event: PointerEvent) {
     const target = event.target as Element;
     if (cardMenu && !target.closest(".card-menu, .card-more")) cardMenu = null;
+    if (folderMenu && !target.closest(".folder-menu, .folder-more")) folderMenu = null;
     if (menu && menuAnchor && !menuAnchor.contains(event.target as Node))
       menu = false;
     if (sortMenu && sortAnchor && !sortAnchor.contains(event.target as Node))
@@ -1146,6 +1148,10 @@
       }
       if (cardMenu) {
         cardMenu = null;
+        return;
+      }
+      if (folderMenu) {
+        folderMenu = null;
         return;
       }
       if (settingsOpen) {
@@ -1403,20 +1409,13 @@
               fill="currentColor"
             /> <span>{row.folder.name}</span>
           </button>
-          <button
-            class="folder-action icon"
-            aria-label={"Rename folder " + row.folder.name}
-            title="Rename folder"
-            onclick={() => renameFolder(row.folder)}
-            ><Pencil size={15} /></button
-          >
-          <button
-            class="folder-action icon"
-            aria-label={"Delete folder " + row.folder.name}
-            title="Delete folder"
-            onclick={() => deleteFolder(row.folder)}
-            ><Trash2 size={15} /></button
-          >
+          <button class="folder-more icon" aria-label={"Actions for folder " + row.folder.name} aria-expanded={folderMenu === row.folder.id} title="Folder actions" onclick={() => folderMenu = folderMenu === row.folder.id ? null : row.folder.id}><MoreVertical size={17} /></button>
+          {#if folderMenu === row.folder.id}
+            <div class="folder-menu" role="group" aria-label={"Actions for folder " + row.folder.name}>
+              <button onclick={() => { folderMenu = null; renameFolder(row.folder); }}><Pencil size={15} /> Rename folder</button>
+              <button onclick={() => { folderMenu = null; deleteFolder(row.folder); }}><Trash2 size={15} /> Delete folder</button>
+            </div>
+          {/if}
         </div>
         {#if expandedFolders.includes(row.folder.id)}
           {#each sidebarPads.filter((p) => p.folder_id === row.folder.id) as pad (pad.id)}
@@ -1773,7 +1772,7 @@
                   />{/if}</button
               ><button onclick={back} class="text-button writer-files"
                 ><ArrowLeft size={16} /> Files</button
-              >{/if}<span class="save-status" class:failed={!!saveError}
+              >{/if}<span class="save-status" class:failed={!!saveError} role="status" aria-live="polite"
               >{#if saving}<LoaderCircle size={13} class="spin" /> Saving{:else if saveError}<button
                   onclick={() => save()}>Retry save</button
                 >{:else if dirty}Unsaved{:else}<Check size={13} /> Saved{/if}</span
@@ -1801,7 +1800,7 @@
                 aria-label={"Rename " + (active.title || "Untitled")}
                 onclick={editTitle}>{active.title || "Untitled"}</button
               >{/if}<span class="writer-path" title={filePath(active, folders)}
-              >{filePath(active, folders)}</span
+              >{filePath(active, folders).split(" / ").slice(0, -1).join(" / ")}</span
             >
           </div>
           <div class="writer-actions">
@@ -2101,22 +2100,12 @@
                             }}
                           />{/if}
                         <button
-                          class="card-rename-button icon"
-                          onclick={() => beginRename(pad, "card")}
-                          aria-label={"Rename " + pad.title}
-                          title="Rename File"><Pencil size={14} /></button
-                        ><button
                           class="card-pin icon"
                           class:filled={pad.pinned}
                           onclick={() => pin(pad)}
                           aria-label={pad.pinned
                             ? "Unpin " + pad.title
                             : "Pin " + pad.title}><Pin size={14} /></button
-                        ><button
-                          class="card-delete icon"
-                          onclick={() => requestTrash(pad)}
-                          aria-label={"Delete " + pad.title}
-                          title="Delete File"><Trash2 size={14} /></button
                         ><button
                           class="card-more icon"
                           onclick={() =>
@@ -2128,8 +2117,10 @@
                         {#if cardMenu === pad.id}<div
                             class="card-menu"
                             role="group"
-                            aria-label={"Move " + pad.title}
+                            aria-label={"Actions for " + pad.title}
                           >
+                            <button onclick={() => { cardMenu = null; beginRename(pad, "card"); }}><Pencil size={14} /> Rename</button>
+                            <button onclick={() => { cardMenu = null; requestTrash(pad); }}><Trash2 size={14} /> Move to Trash</button>
                             <span>Move to</span><button
                               onclick={() => movePad(pad, null)}>Files</button
                             >

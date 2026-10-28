@@ -215,3 +215,14 @@ body .cm-editor,body .markdown{font-size:var(--editor-size, 20px)}
 .sidebar nav button,.folder-toggle,.script-open,.settings-nav button,.writer-tab-open{min-height:32px}
 @media(hover:none){.card-pin,.card-rename-button,.card-delete{opacity:1}}
 @media(max-width:760px){.pad-list .pad-open{grid-template-columns:minmax(0,1fr);gap:3px;padding-right:150px}.pad-list .card-bottom{display:none}.pad-list .card-pin{right:112px}.pad-list .card-rename-button{right:80px}.pad-list .card-delete{right:48px}.pad-list .card-more{right:16px}}
+
+/* File actions and writer hierarchy */
+.folder-more{opacity:1;color:var(--secondary)}
+.folder-menu button,.card-menu button{display:flex;align-items:center;justify-content:flex-start;gap:8px;min-height:32px;border-radius:var(--control-radius)}
+.folder-menu button:last-child,.card-menu button:nth-child(2){border-top:1px solid var(--faint)}
+.card-menu span{border-top:1px solid var(--faint);margin-top:4px;padding-top:9px;font-size:max(12px, calc(12px * var(--ui-scale, 1)))}
+.pad-grid:not(.pad-list) .card-pin{right:40px}.pad-list .card-pin{right:50px}
+.pad-list .pad-open{padding-right:95px}
+.writer-tab{border-right:1px solid var(--faint);border-bottom:3px solid transparent}.writer-tab.active{background:var(--card);color:var(--text);border-bottom-color:var(--text);box-shadow:none;font-weight:700}.writer-tab-open{font-size:max(12px, calc(13px * var(--ui-scale, 1)))}
+.writer-toolbar{min-height:54px}.writer-title{padding:4px 0}.toolbar-title,.toolbar-title-input{font-size:max(16px, calc(20px * var(--ui-scale, 1)))}.writer-path{max-width:100%;max-height:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary)}.save-status{white-space:nowrap}.save-status.failed{font-weight:700}
+@media(max-width:760px){.writer-back .save-status{display:flex;font-size:12px}.writer-toolbar{grid-template-columns:auto minmax(0,1fr) auto}.writer-title{overflow:hidden}.toolbar-title,.toolbar-title-input{font-size:14px}.writer-path{font-size:12px}.writer-back{gap:3px}.pad-list .pad-open{padding-right:82px}.pad-list .card-pin{right:48px}}
