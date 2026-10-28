@@ -1427,10 +1427,7 @@
               <FileText size={16} /><button
                 class="script-open"
                 onclick={() => open(pad)}
-                title={filePath(pad, folders)}
-                ><span>{pad.title}</span><small class="file-path"
-                  >{filePath(pad, folders)}</small
-                ></button
+                ><span>{pad.title || "Untitled"}</span></button
               >{#if pad.pinned}<Pin size={14} fill="currentColor" />{/if}
             </div>
           {/each}
@@ -1465,10 +1462,7 @@
             <button
               class="script-open"
               onclick={() => open(pad)}
-              title={filePath(pad, folders)}
-              ><span>{pad.title || "Untitled"}</span><small class="file-path"
-                >{filePath(pad, folders)}</small
-              ></button
+              ><span>{pad.title || "Untitled"}</span></button
             >
             <button
               class="row-action"
