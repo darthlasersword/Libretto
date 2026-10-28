@@ -49,6 +49,10 @@
   let expandedFolders: string[] = [];
   let cardMenu: string | null = null;
   let uploadBusy = false;
+  let folderDialogOpen = false;
+  let folderName = "";
+  let folderCreating = false;
+  let folderError = "";
   let fileUpload: HTMLInputElement;
   let folderUpload: HTMLInputElement;
   let trash: TrashedPad[] = [];
@@ -439,12 +443,16 @@
     }
   }
   async function createFolder() {
-    const name = prompt("Folder name:");
-    if (name === null || !name.trim()) return;
+    const name = folderName.trim();
+    if (!name || folderCreating) return;
+    folderCreating = true;
+    folderError = "";
     try {
-      const folder: Folder = await request("/folders", {method:"POST", body:JSON.stringify({name:name.trim(),parent_id:null})});
+      const folder: Folder = await request("/folders", {method:"POST", body:JSON.stringify({name,parent_id:null})});
       folders = [...folders, folder]; expandedFolders = [...expandedFolders, folder.id];
-    } catch (e) { showNotice("Unable to create folder: " + (e as Error).message); }
+      folderDialogOpen = false;
+    } catch (e) { folderError = "Unable to create folder: " + (e as Error).message; }
+    finally { folderCreating = false; }
   }
   async function renameFolder(folder: Folder) {
     const name = prompt("Folder name:", folder.name);
@@ -866,7 +874,7 @@
       {/if}
       <div class="create-grid">
         <button onclick={create} disabled={creating}><FilePlus size={17} /> New file</button>
-        <button onclick={createFolder}><FolderPlus size={17} /> New folder</button>
+        <button onclick={() => { folderName = ""; folderError = ""; folderDialogOpen = true; }}><FolderPlus size={17} /> New folder</button>
         <button onclick={() => fileUpload.click()} disabled={uploadBusy}><FileUp size={17} /> Upload file</button>
         <button onclick={() => folderUpload.click()} disabled={uploadBusy}><FolderPlus size={17} /> Upload folder</button>
         <input bind:this={fileUpload} type="file" accept=".md,.markdown,.txt,text/plain,text/markdown" multiple hidden onchange={(e) => uploadFiles(e, false)} />
@@ -1305,6 +1313,17 @@
   </main>
 </div>
 {#if notice}<div class="notice" role="status">{notice}<button class="icon" onclick={() => (notice = "")} aria-label="Dismiss message"><X size={14} /></button></div>{/if}
+{#if folderDialogOpen}
+  <dialog use:openDialog={() => { if (!folderCreating) folderDialogOpen = false; }} class="modal setup-modal" oncancel={(event) => { if (folderCreating) event.preventDefault(); else folderDialogOpen = false; }} aria-modal="true" aria-label="New folder">
+    <h2>New folder</h2>
+    <form onsubmit={(event) => { event.preventDefault(); createFolder(); }}>
+      <label for="folder-name">Folder name</label>
+      <input id="folder-name" bind:value={folderName} maxlength="200" required autocomplete="off" />
+      {#if folderError}<p role="alert" class="setup-error">{folderError}</p>{/if}
+      <div class="modal-actions"><button class="text-button" type="button" disabled={folderCreating} onclick={() => (folderDialogOpen = false)}>Cancel</button><button class="primary" type="submit" disabled={folderCreating || !folderName.trim()}>Create folder</button></div>
+    </form>
+  </dialog>
+{/if}
 {#if setupRequired}
   <dialog use:openDialog={() => {}} class="modal setup-modal" oncancel={(event) => event.preventDefault()} aria-modal="true" aria-label="Choose where to save files">
     <h2>Where would you like to save your files?</h2>
