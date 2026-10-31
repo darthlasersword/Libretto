@@ -9,12 +9,12 @@ function ranges(doc:string, cursor:number, focused=true) {
  previewDecorations(state,focused).between(0,doc.length,(from,to) => { if(from!==to) found.push({from,to,text:doc.slice(from,to)}); });
  return found;
 }
-test('live preview hides syntax only on inactive lines without changing source',()=>{
+test('live preview reveals only the active inline formatting without changing source',()=>{
  const doc='# Title\n**bold** and *italic* and [link](https://example.com)\n- [x] done';
  const other=ranges(doc,2);
  expect(other.map(r=>r.text)).toEqual(['**','**','*','*','[','](https://example.com)','-','[x]']);
  const focused=ranges(doc,doc.indexOf('bold'));
- expect(focused.map(r=>r.text)).toEqual(['# ','-','[x]']);
+ expect(focused.map(r=>r.text)).toEqual(['# ','*','*','[','](https://example.com)','-','[x]']);
  expect(ranges(doc,0,false).map(r=>r.text)).toEqual(['# ','**','**','*','*','[','](https://example.com)','-','[x]']);
 });
 test('fenced code and quotes preview without hiding code contents',()=>{
@@ -52,4 +52,27 @@ test('preview limits work to the viewport while keeping multiline block styling'
  decorations.between(0,doc.length,(from,to,value)=>{count++; if(from===to) lineClasses.push(value.spec.class);});
  expect(count).toBeLessThan(10);
  expect(lineClasses).toContain('cm-preview-quote');
+});
+
+test('inline markers remain visible at both boundaries and hide once the caret moves away',()=>{
+ const doc='*Hello*  **world** ';
+ expect(ranges(doc,0).map(r=>r.text)).toEqual(['**','**']);
+ expect(ranges(doc,6).map(r=>r.text)).toEqual(['**','**']);
+ expect(ranges(doc,7).map(r=>r.text)).toEqual(['**','**']);
+ expect(ranges(doc,8).map(r=>r.text)).toEqual(['*','*','**','**']);
+ expect(ranges(doc,9).map(r=>r.text)).toEqual(['*','*']);
+ expect(ranges(doc,13).map(r=>r.text)).toEqual(['*','*']);
+ expect(ranges(doc,18).map(r=>r.text)).toEqual(['*','*']);
+ expect(ranges(doc,19).map(r=>r.text)).toEqual(['*','*','**','**']);
+});
+test('inline selections and nested formatting reveal only what intersects the selection',()=>{
+ const doc='*one* **two *three*** `code` [link](https://example.com)';
+ const state=(anchor:number,head:number)=>EditorState.create({doc,selection:{anchor,head},extensions:[markdown({base:markdownLanguage})]});
+ const hidden=(anchor:number,head:number)=>{const result:string[]=[];previewDecorations(state(anchor,head),true).between(0,doc.length,(from,to)=>{if(from!==to)result.push(doc.slice(from,to));});return result;};
+ const inside=doc.indexOf('three')+1;
+ expect(hidden(inside,inside)).toEqual(['*','*','`','`','[','](https://example.com)']);
+ const link=doc.indexOf('link')+1;
+ expect(hidden(link,link)).toContain('`');
+ expect(hidden(link,link)).not.toContain('](https://example.com)');
+ expect(hidden(1,doc.indexOf('two')+2)).not.toContain('**');
 });

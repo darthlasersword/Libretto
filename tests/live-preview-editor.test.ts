@@ -60,7 +60,7 @@ test('editing and undo on a revealed line keep the surrounding preview and sourc
  const pos=doc.indexOf('Bold')+4;
  view.dispatch({selection:{anchor:pos}});
  expect(lines()[0]).toBe('Heading');
- expect(lines()[2]).toBe('**Bold** and [link](https://example.com)');
+ expect(lines()[2]).toBe('**Bold** and link');
  view.dispatch({changes:{from:pos,to:pos,insert:'!'},selection:{anchor:pos+1},userEvent:'input.type'});
  expect(view.state.doc.toString()).toContain('**Bold!**');
  expect(undo(view)).toBe(true);
@@ -152,5 +152,36 @@ test('inactive Markdown content retains its visual formatting',()=>{
   expect(style('italic').fontStyle).toBe('italic');
   expect(style('removed').textDecoration).toContain('line-through');
   expect(style('link').textDecoration).toContain('underline');
+ } finally {view.destroy();dom.window.close();}
+});
+
+test('moving the caret between formatted spans on one line switches source and preview',()=>{
+ const dom=new JSDOM('<!doctype html><body><div id="editor"></div></body>',{pretendToBeVisual:true});
+ const win=dom.window;
+ win.Range.prototype.getClientRects=()=>[] as unknown as DOMRectList;
+ win.Range.prototype.getBoundingClientRect=()=>new win.DOMRect();
+ Object.assign(globalThis,{window:win,document:win.document,Window:win.Window,MutationObserver:win.MutationObserver,requestAnimationFrame:win.requestAnimationFrame.bind(win),cancelAnimationFrame:win.cancelAnimationFrame.bind(win)});
+ const doc='*Hello*  **world** '; 
+ const view=new EditorView({parent:win.document.getElementById('editor')!,state:EditorState.create({doc,extensions:[history(),markdown({base:markdownLanguage}),previewHighlight,livePreview]})});
+ try {
+  view.focus();
+  const line=()=>view.dom.querySelector('.cm-line')!.textContent;
+  view.dispatch({selection:{anchor:6}});
+  expect(line()).toBe('*Hello*  world ');
+  view.dispatch({selection:{anchor:7}});
+  expect(line()).toBe('*Hello*  world ');
+  view.dispatch({selection:{anchor:8}});
+  expect(line()).toBe('Hello  world ');
+  view.dispatch({selection:{anchor:13}});
+  expect(line()).toBe('Hello  **world** ');
+  view.dispatch({selection:{anchor:doc.length-1}});
+  expect(line()).toBe('Hello  **world** ');
+  view.dispatch({selection:{anchor:doc.length}});
+  expect(line()).toBe('Hello  world ');
+  view.dispatch({changes:{from:doc.length,to:doc.length,insert:'again'},selection:{anchor:doc.length+5},userEvent:'input.type'});
+  expect(line()).toBe('Hello  world again');
+  expect(view.state.doc.toString()).toBe(doc+'again');
+  expect(undo(view)).toBe(true);
+  expect(view.state.doc.toString()).toBe(doc);
  } finally {view.destroy();dom.window.close();}
 });

@@ -76,8 +76,13 @@ export function previewDecorations(state: EditorState, focused: boolean, viewpor
     for (let line = first; line <= last; line++) if (activeLines.has(line)) return false;
     return true;
   };
-  const replace = (from: number, to: number, value = hidden) => {
-    if (to <= from || !inactive(from, to)) return;
+  // Inline formatting is revealed only while a selection intersects it. A
+  // A caret touching either boundary still belongs to the formatting.
+  const inlineActive = (from: number, to: number) => focused && state.selection.ranges.some(range =>
+    range.empty ? range.from >= from && range.from <= to : range.from < to && range.to > from
+  );
+  const replace = (from: number, to: number, value = hidden, inlineScope?: {from: number; to: number}) => {
+    if (to <= from || (inlineScope ? inlineActive(inlineScope.from, inlineScope.to) : !inactive(from, to))) return;
     const first = state.doc.lineAt(from), last = state.doc.lineAt(to);
     if (first.number === last.number) { ranges.push({from, to, value}); return; }
     // View plugins cannot replace line breaks. Keep multiline widgets as source;
@@ -100,9 +105,9 @@ export function previewDecorations(state: EditorState, focused: boolean, viewpor
       }
     }
     if (name === 'Escape') {
-      replace(node.from, node.from + 1);
+      replace(node.from, node.from + 1, hidden, node);
     } else if (name === 'Autolink') {
-      for (const mark of node.node.getChildren('LinkMark')) replace(mark.from, mark.to);
+      for (const mark of node.node.getChildren('LinkMark')) replace(mark.from, mark.to, hidden, node);
     } else if (name === 'TableDelimiter') {
       if (parent === 'Table') replace(node.from, node.to);
       else replace(node.from, node.to, Decoration.replace({widget: new TableSeparator()}));
@@ -111,7 +116,7 @@ export function previewDecorations(state: EditorState, focused: boolean, viewpor
       if (state.doc.sliceString(end, end + 1) === ' ') end++;
       replace(node.from, end);
     } else if (name === 'EmphasisMark' || name === 'StrikethroughMark' || (name === 'CodeMark' && parent === 'InlineCode')) {
-      replace(node.from, node.to);
+      replace(node.from, node.to, hidden, node.node.parent ?? node);
     } else if (name === 'ListMark' && /^[-+*]$/.test(state.sliceDoc(node.from, node.to))) {
       replace(node.from, node.to, bullet);
     } else if (name === 'TaskMarker') {
@@ -124,7 +129,7 @@ export function previewDecorations(state: EditorState, focused: boolean, viewpor
         let safe = false;
         try { safe = ['http:', 'https:'].includes(new URL(source, 'https://rune.invalid/').protocol); } catch { /* Keep invalid URLs as source. */ }
         if (safe) {
-          replace(node.from, node.to, Decoration.replace({widget: new ImagePreview(source, state.sliceDoc(marks[0].to, marks[1].from))}));
+          replace(node.from, node.to, Decoration.replace({widget: new ImagePreview(source, state.sliceDoc(marks[0].to, marks[1].from))}), node);
           return false;
         }
       }
@@ -133,8 +138,8 @@ export function previewDecorations(state: EditorState, focused: boolean, viewpor
     } else if (name === 'Link') {
       const children = node.node.getChildren('LinkMark');
       if (children.length >= 2) {
-        replace(children[0].from, children[0].to);
-        replace(children[1].from, node.to);
+        replace(children[0].from, children[0].to, hidden, node);
+        replace(children[1].from, node.to, hidden, node);
       }
     } else if (name === 'FencedCode') {
       for (const mark of node.node.getChildren('CodeMark')) {
