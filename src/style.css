@@ -273,3 +273,59 @@ body .cm-editor,body .markdown{font-size:var(--editor-size, 20px)}
 .cm-preview-table-header{font-weight:700;border-bottom:1px solid var(--faint)}
 .cm-preview-table-row{border-bottom:1px solid var(--faint)}
 .cm-preview-table-separator{color:var(--muted);padding:0 .45em}
+
+/* Shared compact layout. --padding-scale is the user's spacing preference;
+   the fixed minimums keep controls comfortable even at the Compact setting. */
+:root {
+  --space-xs: clamp(4px, calc(4px + 4px * var(--padding-scale, .4)), 8px);
+  --space-sm: clamp(8px, calc(8px + 8px * var(--padding-scale, .4)), 16px);
+  --space-md: clamp(12px, calc(12px + 12px * var(--padding-scale, .4)), 24px);
+  --control-height: 34px;
+}
+.dashboard { padding: var(--space-md); }
+.dashboard h1 { font-size: calc(28px * var(--ui-scale, 1)); letter-spacing: -.03em; }
+.library-toolbar { margin: var(--space-sm) 0; padding: 3px var(--space-sm); min-height: 40px; }
+.view-controls { gap: var(--space-sm); }
+.pad-grid:not(.pad-list) { grid-template-columns: repeat(auto-fill,minmax(min(100%, 260px), 1fr)); gap: var(--space-sm); }
+.pad-grid:not(.pad-list) .pad-card { aspect-ratio: auto; min-height: 0; }
+.pad-grid:not(.pad-list) .pad-open { min-height: 124px; height: 100%; padding: 38px var(--space-sm) var(--space-sm); }
+.pad-grid:not(.pad-list) .card-path { margin-bottom: var(--space-xs); }
+.pad-grid:not(.pad-list) .card-preview { margin-bottom: var(--space-xs); }
+.pad-list { gap: var(--space-xs); }
+.pad-list .pad-open { min-height: 44px; }
+.empty { padding: var(--space-md); }
+.sidebar { padding: var(--space-sm); }
+.sidebar nav { margin: var(--space-sm) 0; }
+.script-list { padding-top: var(--space-xs); }
+.sidebar-file,.folder-row { min-height: 34px; }
+.writer-toolbar { min-height: 48px; padding: 3px var(--space-sm); gap: var(--space-sm); }
+.writer-title { padding: 0; }
+.toolbar-title,.toolbar-title-input { font-size: max(15px,calc(16px * var(--ui-scale, 1))); padding: 2px 6px; }
+.writer-path { line-height: 1.25; }
+.writer-back,.writer-actions { gap: var(--space-xs); }
+.writer-actions .segmented button,.writer-files { min-height: var(--control-height); padding: 5px 9px; }
+.writer-actions>.icon { width: 34px; padding-left: 8px; }
+.writer-tabs { min-height: 34px; }
+.writer-tab-open { padding: 6px 8px; }
+.paper { padding: var(--space-md) var(--space-md) calc(var(--space-md) * 2); }
+.settings-heading { margin-bottom: var(--space-md); }
+.settings-layout { gap: var(--space-md); }
+.settings-section { padding: var(--space-sm) 0; }
+.settings-control,.settings-control-grid,.settings-preview { margin-top: var(--space-sm); }
+.settings-control-grid { gap: var(--space-sm); }
+.settings-preview,.modal { padding: var(--space-md); }
+.modal-actions { gap: var(--space-sm); margin-top: var(--space-md); }
+.modal-actions button { min-height: var(--control-height); padding: 6px 10px; }
+.trash-row { padding: var(--space-sm); }
+.dropdown,.sort-menu,.card-menu,.folder-menu,.sidebar-file-menu,.context-menu { border: 1px solid var(--faint); border-radius: var(--surface-radius); background: var(--card); padding: 4px; box-shadow: 0 8px 24px #0004; }
+.dropdown button,.sort-menu button,.card-menu button,.folder-menu button,.sidebar-file-menu button,.context-menu button { min-height: var(--control-height); padding: 6px 9px; border-radius: var(--control-radius); text-align: left; justify-content: flex-start; }
+@media (max-width: 760px) {
+ .dashboard { padding: var(--space-sm); }
+ .library-toolbar { flex-wrap: wrap; }
+ .search-box { min-width: 140px; }
+ .writer-toolbar { gap: 4px; padding-inline: var(--space-xs); }
+ .toolbar-title,.toolbar-title-input { font-size: 14px; }
+ .writer-actions { gap: 2px; }
+ .settings-layout { gap: var(--space-sm); }
+ .paper { padding-inline: var(--space-sm); }
+}

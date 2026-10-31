@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Folder, Pad, TrashedPad } from '../src/lib/types';
+import { titleError, FileNameError } from '../src/lib/file-names';
 
 type Meta = Omit<Pad, 'content'> & { filename: string };
 type TrashedMeta = Meta & { deleted_at: string };
@@ -35,24 +36,42 @@ export class JsonPadStore {
  }
  private activePath(p: Meta) { return join(this.savesPath, p.filename); }
  private deletedPath(p: Meta) { return join(this.trashPath, p.filename); }
+ // Check within the serialized mutation so concurrent requests cannot claim the same title.
+ private checkTitle(title: string, data: DataFile, excludeId?: string) {
+  const error = titleError(title, [...data.scripts, ...data.trash].filter(p => p.id !== excludeId).map(p => p.title));
+  if (error) throw new FileNameError(error);
+ }
+ // Automatic names preserve imported data and never replace an unrelated disk file.
+ private async availableTitle(title: string, data: DataFile): Promise<string> {
+  let base = slug(title).trim().normalize('NFC');
+  if (titleError(base)) base = 'Untitled';
+  const existing = [...data.scripts, ...data.trash].map(p => p.title);
+  for (let n = 1; ; n++) {
+   const suffix = n === 1 ? '' : ` (${n})`;
+   let prefix = base;
+   while (new TextEncoder().encode(prefix + suffix).length > 180) prefix = Array.from(prefix).slice(0, -1).join('');
+   const candidate = prefix + suffix;
+   if (!titleError(candidate, existing) && await this.filename(candidate) === candidate + '.md') return candidate;
+  }
+ }
  private async filename(title: string, excludeId?: string): Promise<string> {
-  const used = new Set(this.data.scripts.filter(p => p.id !== excludeId).map(p => p.filename.toLowerCase()));
+  const used = new Set(this.data.scripts.filter(p => p.id !== excludeId).map(p => p.filename.normalize('NFC').toLowerCase()));
   const existing = await readdir(this.savesPath).catch((e: NodeJS.ErrnoException) => { if (e.code === 'ENOENT') return [] as string[]; throw e; });
   const current = excludeId && this.data.scripts.find(p => p.id === excludeId)?.filename;
-  for (const name of existing) if (name !== current) used.add(name.toLowerCase());
+  for (const name of existing) if (name !== current) used.add(name.normalize('NFC').toLowerCase());
   const base = slug(title);
   for (let n = 1;; n++) {
    const candidate = `${base}${n === 1 ? '' : ` (${n})`}.md`;
-   if (!used.has(candidate.toLowerCase())) return candidate;
+   if (!used.has(candidate.normalize('NFC').toLowerCase())) return candidate;
   }
  }
  private async trashFilename(title: string, excludeId?: string): Promise<string> {
-  const used = new Set(this.data.trash.filter(p=>p.id!==excludeId).map(p=>p.filename.toLowerCase()));
+  const used = new Set(this.data.trash.filter(p=>p.id!==excludeId).map(p=>p.filename.normalize('NFC').toLowerCase()));
   const existing = await readdir(this.trashPath).catch((e:NodeJS.ErrnoException)=>{if(e.code==='ENOENT')return [] as string[];throw e;});
   const current = excludeId && this.data.trash.find(p=>p.id===excludeId)?.filename;
-  for(const name of existing) if(name!==current) used.add(name.toLowerCase());
+  for(const name of existing) if(name!==current) used.add(name.normalize('NFC').toLowerCase());
   const base=slug(title);
-  for(let n=1;;n++){const candidate=`${base}${n===1?'':` (${n})`}.md`;if(!used.has(candidate.toLowerCase()))return candidate;}
+  for(let n=1;;n++){const candidate=`${base}${n===1?'':` (${n})`}.md`;if(!used.has(candidate.normalize('NFC').toLowerCase()))return candidate;}
  }
  static async open(path: string, savesPath?: string): Promise<JsonPadStore> {
   const store = new JsonPadStore(path, savesPath);
@@ -151,14 +170,14 @@ export class JsonPadStore {
    const imported:{id:string;content:string}[]=[];
    try {
     for(const p of backup.scripts as Pad[]){
-     const id=crypto.randomUUID();const filename=await this.filename(p.title);
-     const meta:Meta={...metadata(p),id,filename,folder_id:p.folder_id ? folderMap.get(p.folder_id) ?? null : null};
+     const id=crypto.randomUUID();const title=await this.availableTitle(p.title,draft);const filename=await this.filename(title);
+     const meta:Meta={...metadata(p),id,title,filename,folder_id:p.folder_id ? folderMap.get(p.folder_id) ?? null : null};
      const path=this.activePath(meta);await this.atomicWrite(path,p.content);
      created.push(path);draft.scripts.push(meta);imported.push({id,content:p.content});
     }
     for(const p of backup.trash as TrashedPad[]){
-     const id=crypto.randomUUID();const filename=await this.trashFilename(p.title);
-     const {content:_,...rest}=p;const meta:TrashedMeta={...rest,id,filename,folder_id:p.folder_id ? folderMap.get(p.folder_id) ?? null : null};
+     const id=crypto.randomUUID();const title=await this.availableTitle(p.title,draft);const filename=await this.trashFilename(title);
+     const {content:_,...rest}=p;const meta:TrashedMeta={...rest,id,title,filename,folder_id:p.folder_id ? folderMap.get(p.folder_id) ?? null : null};
      const path=this.deletedPath(meta);await this.atomicWrite(path,p.content);
      created.push(path);draft.trash.push(meta);imported.push({id,content:p.content});
     }
@@ -173,10 +192,13 @@ export class JsonPadStore {
  }
  get(id:string):Pad|undefined { const p=this.data.scripts.find(p=>p.id===id);return p&&this.full(p); }
  async export(id:string):Promise<string|undefined> { const p=this.data.scripts.find(p=>p.id===id);return p&&readFile(this.activePath(p),'utf8'); }
- async create(input?:{title:string;content:string;folder_id:string|null}):Promise<Pad> { return this.mutate(async data=>{
+ async create(input?:{title:string;content:string;folder_id:string|null;autoTitle?:boolean}):Promise<Pad> { return this.mutate(async data=>{
   if(input?.folder_id && !data.folders.some(f=>f.id===input.folder_id)) throw new TypeError('Folder not found.');
-  const now=new Date().toISOString();const pad:Pad={id:crypto.randomUUID(),title:input?.title.trim()||'Untitled',content:input?.content??'',folder_id:input?.folder_id??null,pinned:false,revision:1,created_at:now,updated_at:now};
+  const title = input?.autoTitle || !input ? await this.availableTitle(input?.title || 'Untitled',data) : input.title.trim().normalize('NFC');
+  this.checkTitle(title,data);
+  const now=new Date().toISOString();const pad:Pad={id:crypto.randomUUID(),title,content:input?.content??'',folder_id:input?.folder_id??null,pinned:false,revision:1,created_at:now,updated_at:now};
   const meta={...metadata(pad),filename:await this.filename(pad.title)};
+  if(meta.filename !== pad.title + '.md') throw new FileNameError('A file with this name already exists in the storage folder.');
   await this.atomicWrite(this.activePath(meta),pad.content);data.scripts.push(meta);this.contents.set(pad.id,pad.content);
   return {changed:true,result:pad};
  }); }
@@ -236,13 +258,16 @@ export class JsonPadStore {
   return this.mutate<{status:'saved';pad:Pad}|{status:'conflict'|'missing'}>(async data=>{
    const p=data.scripts.find(p=>p.id===id);if(!p)return {changed:false,result:{status:'missing' as const}};
    if(p.revision!==input.revision)return {changed:false,result:{status:'conflict' as const}};
-   const old=this.activePath(p);const title=input.title.trim()||'Untitled';
+   const old=this.activePath(p);const title=input.title===p.title ? p.title : input.title.trim().normalize('NFC');
+   if(title!==p.title) this.checkTitle(title,data,id);
    const filename=title===p.title?p.filename:await this.filename(title,id);
+   if(title!==p.title && filename!==title+'.md') throw new FileNameError('A file with this name already exists in the storage folder.');
    const next=join(this.savesPath,filename);
    if(next!==old || this.contents.get(id)!==input.content) await this.atomicWrite(next,input.content);
    p.title=title;p.filename=filename;p.pinned=input.pinned;p.revision++;p.updated_at=new Date().toISOString();
    this.contents.set(id,input.content);
-   return {changed:true,result:{status:'saved' as const,pad:this.full(p)},remove:next===old?[]:[old]};
+   // A case-only rename refers to the same file on Windows; do not remove it.
+   return {changed:true,result:{status:'saved' as const,pad:this.full(p)},remove:next===old || (process.platform === 'win32' && next.toLowerCase() === old.toLowerCase())?[]:[old]};
   });
  }
  async delete(id:string):Promise<boolean> { return this.mutate(async data=>{
@@ -254,8 +279,10 @@ export class JsonPadStore {
  }); }
  async restore(id:string):Promise<Pad|undefined> { return this.mutate(async data=>{
   const index=data.trash.findIndex(p=>p.id===id);if(index<0)return {changed:false,result:undefined};
-  const p=data.trash[index];const filename=await this.filename(p.title);
-  const {deleted_at:_,...rest}=p;const active={...rest,filename};
+  const p=data.trash[index];
+  const others={...data,trash:data.trash.filter(item=>item.id!==id)};
+  const title=await this.availableTitle(p.title,others);const filename=await this.filename(title);
+  const {deleted_at:_,...rest}=p;const active={...rest,title,filename};
   await this.atomicWrite(this.activePath(active),this.contents.get(id)??'');
   data.trash.splice(index,1);data.scripts.push(active);
   return {changed:true,result:this.full(active),remove:[this.deletedPath(p)]};

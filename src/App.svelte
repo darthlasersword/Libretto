@@ -39,6 +39,7 @@
     MoreVertical,
   } from "lucide-svelte";
   import Editor from "./lib/Editor.svelte";
+  import { titleError } from "./lib/file-names";
   import { renderMarkdown } from "./lib/markdown";
   import { importFiles } from "./lib/upload";
   import { filePath } from "./lib/paths";
@@ -58,7 +59,13 @@
   let pads: Pad[] = [];
   let folders: Folder[] = [];
   let expandedFolders: string[] = [];
-  let contextMenu: { x: number; y: number; kind: "file" | "folder" | "trash" | "background"; id?: string; source?: "sidebar" | "card" } | null = null;
+  let contextMenu: {
+    x: number;
+    y: number;
+    kind: "file" | "folder" | "trash" | "background";
+    id?: string;
+    source?: "sidebar" | "card";
+  } | null = null;
   let contextNode: HTMLDivElement;
   let contextReturnFocus: HTMLElement | null = null;
   let cardMenu: string | null = null;
@@ -128,6 +135,36 @@
   let generation = 0;
   let titleInput: HTMLInputElement;
   let titleEditing = false;
+  let titleValue = "";
+  let confirmation: {
+    title: string;
+    message: string;
+    accept: string;
+    resolve: (accepted: boolean) => void;
+  } | null = null;
+  // Both destructive flows use the same accessible dialog instead of browser prompts.
+  function askConfirmation(
+    title: string,
+    message: string,
+    accept: string,
+  ): Promise<boolean> {
+    if (confirmation) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      confirmation = { title, message, accept, resolve };
+    });
+  }
+  function finishConfirmation(accepted: boolean) {
+    const pending = confirmation;
+    confirmation = null;
+    pending?.resolve(accepted);
+  }
+  // This gives immediate feedback; the store repeats the check under its write lock.
+  function fileTitleError(value: string, id: string) {
+    return titleError(
+      value,
+      [...pads, ...trash].filter((p) => p.id !== id).map((p) => p.title),
+    );
+  }
   let menuAnchor: HTMLDivElement;
   let searchInput: HTMLInputElement;
   let renameInput: HTMLInputElement;
@@ -166,7 +203,10 @@
       "--editor-size",
       preferences.editorSize + "px",
     );
-    document.documentElement.style.setProperty("--padding-scale", String(preferences.padding / 100));
+    document.documentElement.style.setProperty(
+      "--padding-scale",
+      String(preferences.padding / 100),
+    );
     try {
       localStorage.setItem(preferencesKey, JSON.stringify(preferences));
     } catch {}
@@ -299,7 +339,12 @@
         return edited || a.title.localeCompare(b.title);
     }
   }
-  $: sidebarPads = [...pads].sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base", numeric: true }));
+  $: sidebarPads = [...pads].sort((a, b) =>
+    a.title.localeCompare(b.title, undefined, {
+      sensitivity: "base",
+      numeric: true,
+    }),
+  );
   $: folderRows = flattenFolders(folders, expandedFolders);
   function flattenFolders(items: Folder[], expanded: string[]) {
     const rows: { folder: Folder; depth: number }[] = [];
@@ -683,9 +728,18 @@
     if (active && !(await flush())) return;
     creating = true;
     try {
-      const pad = await request("/pads", { method: "POST", body: JSON.stringify({ title: "Untitled", content: "", folder_id: folderId }) });
+      const pad = await request("/pads", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Untitled",
+          content: "",
+          folder_id: folderId,
+          autoTitle: true,
+        }),
+      });
       pads = [pad, ...pads];
-      if (folderId) expandedFolders = [...new Set([...expandedFolders, folderId])];
+      if (folderId)
+        expandedFolders = [...new Set([...expandedFolders, folderId])];
       await open(pad);
       await editTitle();
     } catch (e) {
@@ -706,7 +760,8 @@
       });
       folders = [...folders, folder];
       expandedFolders = [...expandedFolders, folder.id];
-      if (folderParent) expandedFolders = [...new Set([...expandedFolders, folderParent])];
+      if (folderParent)
+        expandedFolders = [...new Set([...expandedFolders, folderParent])];
       folderDialogOpen = false;
     } catch (e) {
       folderError = "Unable to create folder: " + (e as Error).message;
@@ -738,11 +793,16 @@
   }
   async function moveFolder(folder: Folder, parentId: string | null) {
     try {
-      const updated: Folder = await request("/folders/" + folder.id + "/move", { method: "POST", body: JSON.stringify({ parent_id: parentId }) });
-      folders = folders.map((f) => f.id === updated.id ? updated : f);
+      const updated: Folder = await request("/folders/" + folder.id + "/move", {
+        method: "POST",
+        body: JSON.stringify({ parent_id: parentId }),
+      });
+      folders = folders.map((f) => (f.id === updated.id ? updated : f));
       if (parentId) expandFolderPath(parentId);
       folderMenu = null;
-    } catch (e) { showNotice("Unable to move folder: " + (e as Error).message); }
+    } catch (e) {
+      showNotice("Unable to move folder: " + (e as Error).message);
+    }
   }
   function canMoveFolder(folder: Folder, destination: Folder) {
     let current: Folder | undefined = destination;
@@ -758,30 +818,82 @@
     await applySelection("delete", [], [folder.id]);
   }
   function toggleSelection(id: string, kind: "file" | "folder") {
-    if (kind === "file") selectedFiles = selectedFiles.includes(id) ? selectedFiles.filter(item => item !== id) : [...selectedFiles, id];
-    else selectedFolders = selectedFolders.includes(id) ? selectedFolders.filter(item => item !== id) : [...selectedFolders, id];
+    if (kind === "file")
+      selectedFiles = selectedFiles.includes(id)
+        ? selectedFiles.filter((item) => item !== id)
+        : [...selectedFiles, id];
+    else
+      selectedFolders = selectedFolders.includes(id)
+        ? selectedFolders.filter((item) => item !== id)
+        : [...selectedFolders, id];
   }
-  async function applySelection(action: "move" | "delete", files = selectedFiles, folderIds = selectedFolders, destination: string | null = null) {
+  async function applySelection(
+    action: "move" | "delete",
+    files = selectedFiles,
+    folderIds = selectedFolders,
+    destination: string | null = null,
+  ) {
     if (selectionBusy || !(files.length + folderIds.length)) return;
-    if (action === "delete" && !confirm(`Move selected files and all files inside selected folders to Trash? Selected folders and their subfolders will be removed. Restored files return to Files.`)) return;
+    if (
+      action === "delete" &&
+      !(await askConfirmation(
+        "Move selection to Trash?",
+        "Selected files and all files inside selected folders will move to Trash. Selected folders and subfolders will be removed; restored files return to Files.",
+        "Move to Trash",
+      ))
+    )
+      return;
     if (active && !(await flush())) return;
     selectionBusy = true;
     try {
-      await request("/selection", { method: "POST", body: JSON.stringify({ action, files, folders: folderIds, parent_id: destination }) });
-      const [nextPads, nextFolders, nextTrash]: [Pad[], Folder[], TrashedPad[]] = await Promise.all([request("/pads"), request("/folders"), request("/trash")]);
-      pads = nextPads; folders = nextFolders; trash = nextTrash;
-      openIds = openIds.filter(id => pads.some(p => p.id === id));
-      expandedFolders = expandedFolders.filter(id => folders.some(f => f.id === id));
+      await request("/selection", {
+        method: "POST",
+        body: JSON.stringify({
+          action,
+          files,
+          folders: folderIds,
+          parent_id: destination,
+        }),
+      });
+      const [nextPads, nextFolders, nextTrash]: [
+        Pad[],
+        Folder[],
+        TrashedPad[],
+      ] = await Promise.all([
+        request("/pads"),
+        request("/folders"),
+        request("/trash"),
+      ]);
+      pads = nextPads;
+      folders = nextFolders;
+      trash = nextTrash;
+      openIds = openIds.filter((id) => pads.some((p) => p.id === id));
+      expandedFolders = expandedFolders.filter((id) =>
+        folders.some((f) => f.id === id),
+      );
       if (active) {
-        const refreshed = pads.find(p => p.id === active?.id);
+        const refreshed = pads.find((p) => p.id === active?.id);
         if (refreshed) active = { ...refreshed };
-        else { active = null; dirty = false; focus = false; menu = false; titleEditing = false; }
+        else {
+          active = null;
+          dirty = false;
+          focus = false;
+          menu = false;
+          titleEditing = false;
+        }
       }
       if (destination) expandFolderPath(destination);
-      selectedFiles = []; selectedFolders = []; selecting = false;
-      showNotice(action === "delete" ? "Files moved to Trash." : "Selection moved.");
-    } catch (e) { showNotice("Unable to " + action + " selection: " + (e as Error).message); }
-    finally { selectionBusy = false; }
+      selectedFiles = [];
+      selectedFolders = [];
+      selecting = false;
+      showNotice(
+        action === "delete" ? "Files moved to Trash." : "Selection moved.",
+      );
+    } catch (e) {
+      showNotice("Unable to " + action + " selection: " + (e as Error).message);
+    } finally {
+      selectionBusy = false;
+    }
   }
   async function uploadFiles(event: Event, withFolders: boolean) {
     const input = event.currentTarget as HTMLInputElement;
@@ -880,8 +992,14 @@
     if (renameId !== id || renaming) return;
     const pad = pads.find((p) => p.id === id);
     if (!pad) return cancelRename();
-    const title = renameValue.trim() || "Untitled";
+    const title = renameValue.trim().normalize("NFC");
     if (title === pad.title) return cancelRename();
+    const invalid = fileTitleError(title, id);
+    if (invalid) {
+      showNotice(invalid);
+      cancelRename();
+      return;
+    }
     renaming = true;
     try {
       const saved: Pad = await request("/pads/" + id, {
@@ -899,7 +1017,8 @@
       cancelRename();
       error = "";
     } catch (e) {
-      error = (e as Error).message;
+      showNotice((e as Error).message);
+      cancelRename();
     } finally {
       renaming = false;
     }
@@ -1037,9 +1156,11 @@
     if (
       resetBusy ||
       resetVerified ||
-      !confirm(
-        "Permanently delete all Rune files and trash? This cannot be undone.",
-      )
+      !(await askConfirmation(
+        "Reset Rune?",
+        "Permanently delete all Rune files and Trash? This cannot be undone.",
+        "Reset Rune",
+      ))
     )
       return;
     resetBusy = true;
@@ -1129,10 +1250,25 @@
     }).format(new Date(value));
   }
   async function editTitle() {
+    if (!active) return;
+    titleValue = active.title;
     titleEditing = true;
     await tick();
     titleInput?.focus();
     titleInput?.select();
+  }
+  function commitTitle() {
+    if (!active || !titleEditing) return;
+    const next = titleValue.trim().normalize("NFC");
+    titleEditing = false;
+    if (next === active.title) return;
+    const invalid = fileTitleError(next, active.id);
+    if (invalid) {
+      showNotice(invalid);
+      return;
+    }
+    active.title = next;
+    changed();
   }
   async function toggleFocus() {
     focus = !focus;
@@ -1150,40 +1286,96 @@
   }
   async function showContextMenu(event: MouseEvent) {
     const target = event.target as HTMLElement;
-    if (target.closest('input, textarea, select, [contenteditable="true"], dialog, .context-menu')) return;
-    const file = target.closest<HTMLElement>('[data-context-file]');
-    const folder = target.closest<HTMLElement>('[data-context-folder]');
-    const deleted = target.closest<HTMLElement>('[data-context-trash]');
-    const kind = file ? "file" : folder ? "folder" : deleted ? "trash" : "background";
-    if (setupRequired || settingsOpen || (kind === "background" && (active || !target.closest(".dashboard, .script-list")))) return;
+    if (
+      target.closest(
+        'input, textarea, select, [contenteditable="true"], dialog, .context-menu',
+      )
+    )
+      return;
+    const file = target.closest<HTMLElement>("[data-context-file]");
+    const folder = target.closest<HTMLElement>("[data-context-folder]");
+    const deleted = target.closest<HTMLElement>("[data-context-trash]");
+    const kind = file
+      ? "file"
+      : folder
+        ? "folder"
+        : deleted
+          ? "trash"
+          : "background";
+    if (
+      setupRequired ||
+      settingsOpen ||
+      (kind === "background" &&
+        (active || !target.closest(".dashboard, .script-list")))
+    )
+      return;
     event.preventDefault();
     contextReturnFocus = document.activeElement as HTMLElement;
     cardMenu = folderMenu = sidebarFileMenu = null;
     menu = sortMenu = false;
-    contextMenu = { x: event.clientX, y: event.clientY, kind, id: file?.dataset.contextFile ?? folder?.dataset.contextFolder ?? deleted?.dataset.contextTrash, source: file?.classList.contains("pad-card") ? "card" : "sidebar" };
+    contextMenu = {
+      x: event.clientX,
+      y: event.clientY,
+      kind,
+      id:
+        file?.dataset.contextFile ??
+        folder?.dataset.contextFolder ??
+        deleted?.dataset.contextTrash,
+      source: file?.classList.contains("pad-card") ? "card" : "sidebar",
+    };
     await tick();
     if (!contextNode || !contextMenu) return;
-    contextMenu = { ...contextMenu, x: Math.max(8, Math.min(event.clientX, innerWidth - contextNode.offsetWidth - 8)), y: Math.max(8, Math.min(event.clientY, innerHeight - contextNode.offsetHeight - 8)) };
-    contextNode.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    contextMenu = {
+      ...contextMenu,
+      x: Math.max(
+        8,
+        Math.min(event.clientX, innerWidth - contextNode.offsetWidth - 8),
+      ),
+      y: Math.max(
+        8,
+        Math.min(event.clientY, innerHeight - contextNode.offsetHeight - 8),
+      ),
+    };
+    contextNode
+      .querySelector<HTMLButtonElement>("button:not(:disabled)")
+      ?.focus();
   }
   function closeContextMenu(restoreFocus = false) {
     contextMenu = null;
     if (restoreFocus) contextReturnFocus?.focus();
   }
   function contextKey(event: KeyboardEvent) {
-    if (!contextNode || (event.target as HTMLElement).tagName === "SELECT" || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-    const items = Array.from(contextNode.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+    if (
+      !contextNode ||
+      (event.target as HTMLElement).tagName === "SELECT" ||
+      !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+    )
+      return;
+    const items = Array.from(
+      contextNode.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"),
+    );
     if (!items.length) return;
     event.preventDefault();
     const index = items.indexOf(document.activeElement as HTMLButtonElement);
-    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) %
+            items.length;
     items[next].focus();
   }
   function clickOutsideMenu(event: PointerEvent) {
     const target = event.target as Element;
     if (cardMenu && !target.closest(".card-menu, .card-more")) cardMenu = null;
-    if (folderMenu && !target.closest(".folder-menu, .folder-more")) folderMenu = null;
-    if (sidebarFileMenu && !target.closest(".sidebar-file-menu, .sidebar-file-more")) sidebarFileMenu = null;
+    if (folderMenu && !target.closest(".folder-menu, .folder-more"))
+      folderMenu = null;
+    if (
+      sidebarFileMenu &&
+      !target.closest(".sidebar-file-menu, .sidebar-file-more")
+    )
+      sidebarFileMenu = null;
     if (menu && menuAnchor && !menuAnchor.contains(event.target as Node))
       menu = false;
     if (sortMenu && sortAnchor && !sortAnchor.contains(event.target as Node))
@@ -1199,7 +1391,12 @@
     position();
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
-    return { destroy() { window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); } };
+    return {
+      destroy() {
+        window.removeEventListener("resize", position);
+        window.removeEventListener("scroll", position, true);
+      },
+    };
   }
   function focusFromPaper(event: PointerEvent) {
     if (
@@ -1241,6 +1438,8 @@
     return active ?? visible.find((pad) => pad.id === selectedId) ?? null;
   }
   function keyboard(event: KeyboardEvent) {
+    // Let the modal handle Escape and keyboard input without triggering app shortcuts.
+    if (confirmation) return;
     const mod = event.metaKey || event.ctrlKey;
     const key = event.key.toLowerCase();
     const shift = event.shiftKey;
@@ -1269,7 +1468,10 @@
         folderMenu = null;
         return;
       }
-      if (sidebarFileMenu) { sidebarFileMenu = null; return; }
+      if (sidebarFileMenu) {
+        sidebarFileMenu = null;
+        return;
+      }
       if (settingsOpen) {
         settingsOpen = false;
         return;
@@ -1432,7 +1634,14 @@
   onkeydown={keyboard}
   onbeforeunload={beforeUnload}
   onpointerdown={clickOutsideMenu}
-  onpointerdowncapture={(event) => { if (contextMenu && contextNode && !contextNode.contains(event.target as Node)) closeContextMenu(); }}
+  onpointerdowncapture={(event) => {
+    if (
+      contextMenu &&
+      contextNode &&
+      !contextNode.contains(event.target as Node)
+    )
+      closeContextMenu();
+  }}
   onpointermove={revealFocusControls}
   oncontextmenu={showContextMenu}
 />
@@ -1511,39 +1720,160 @@
       >
     </nav>
     <div class="sidebar-selection-header">
-      <span>Files and folders</span><button onclick={() => { selecting = !selecting; selectedFiles = []; selectedFolders = []; }} aria-pressed={selecting}>{selecting ? "Done" : "Select"}</button>
+      <span>Files and folders</span><button
+        onclick={() => {
+          selecting = !selecting;
+          selectedFiles = [];
+          selectedFolders = [];
+        }}
+        aria-pressed={selecting}>{selecting ? "Done" : "Select"}</button
+      >
     </div>
     {#if selecting}
       <div class="sidebar-selection-actions">
         <span>{selectedFiles.length + selectedFolders.length} selected</span>
-        <button disabled={selectionBusy || !(selectedFiles.length + selectedFolders.length)} onclick={() => applySelection("delete")}>Delete</button>
-        <label>Move to <select aria-label="Move selected items to" value="choose" disabled={selectionBusy || !(selectedFiles.length + selectedFolders.length)} onchange={(event) => { const value = event.currentTarget.value; event.currentTarget.value = "choose"; if (value !== "choose") void applySelection("move", selectedFiles, selectedFolders, value || null); }}>
-          <option value="choose" disabled>Choose destination…</option><option value="">Files</option>
-          {#each folders.filter(f => selectedFolders.every(id => { const selected = folders.find(item => item.id === id); return selected ? canMoveFolder(selected, f) : false; })) as destination (destination.id)}<option value={destination.id}>{filePath({ title: destination.name, folder_id: destination.parent_id }, folders)}</option>{/each}
-        </select></label>
+        <button
+          disabled={selectionBusy ||
+            !(selectedFiles.length + selectedFolders.length)}
+          onclick={() => applySelection("delete")}>Delete</button
+        >
+        <label
+          >Move to <select
+            aria-label="Move selected items to"
+            value="choose"
+            disabled={selectionBusy ||
+              !(selectedFiles.length + selectedFolders.length)}
+            onchange={(event) => {
+              const value = event.currentTarget.value;
+              event.currentTarget.value = "choose";
+              if (value !== "choose")
+                void applySelection(
+                  "move",
+                  selectedFiles,
+                  selectedFolders,
+                  value || null,
+                );
+            }}
+          >
+            <option value="choose" disabled>Choose destination…</option><option
+              value="">Files</option
+            >
+            {#each folders.filter((f) => selectedFolders.every((id) => {
+                const selected = folders.find((item) => item.id === id);
+                return selected ? canMoveFolder(selected, f) : false;
+              })) as destination (destination.id)}<option value={destination.id}
+                >{filePath(
+                  { title: destination.name, folder_id: destination.parent_id },
+                  folders,
+                )}</option
+              >{/each}
+          </select></label
+        >
       </div>
     {/if}
     <div class="script-list">
       {#snippet sidebarFile(pad: Pad, depth: number)}
-        <div class="sidebar-file" data-context-file={pad.id} class:current={active?.id === pad.id && !settingsOpen} style:padding-left={depth * 16 + 8 + "px"}>
-          {#if selecting}<input class="sidebar-select" type="checkbox" aria-label={"Select file " + (pad.title || "Untitled")} checked={selectedFiles.includes(pad.id)} onchange={() => toggleSelection(pad.id, "file")} />{/if}
+        <div
+          class="sidebar-file"
+          data-context-file={pad.id}
+          class:current={active?.id === pad.id && !settingsOpen}
+          style:padding-left={depth * 16 + 8 + "px"}
+        >
+          {#if selecting}<input
+              class="sidebar-select"
+              type="checkbox"
+              aria-label={"Select file " + (pad.title || "Untitled")}
+              checked={selectedFiles.includes(pad.id)}
+              onchange={() => toggleSelection(pad.id, "file")}
+            />{/if}
           {#if renameId === pad.id && renameSource === "sidebar"}
-            <input bind:this={renameInput} class="sidebar-rename" bind:value={renameValue} maxlength="200" aria-label={"Rename " + pad.title} onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitRename(pad.id); } else if (e.key === "Escape") { e.preventDefault(); cancelRename(); } }} onblur={() => commitRename(pad.id)} />
+            <input
+              bind:this={renameInput}
+              class="sidebar-rename"
+              bind:value={renameValue}
+              maxlength="200"
+              aria-label={"Rename " + pad.title}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitRename(pad.id);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelRename();
+                }
+              }}
+              onblur={() => commitRename(pad.id)}
+            />
           {:else}
             <FileText size={16} />
-            <button class="script-open" onclick={() => open(pad)} ondblclick={() => beginRename(pad)} title={pad.title || "Untitled"}><span>{pad.title || "Untitled"}</span></button>
-            {#if pad.pinned}<Pin class="sidebar-pin" size={13} fill="currentColor" />{/if}
-            <button class="sidebar-file-more icon" aria-label={"Actions for file " + (pad.title || "Untitled")} aria-expanded={sidebarFileMenu === pad.id} title="File actions" onclick={() => sidebarFileMenu = sidebarFileMenu === pad.id ? null : pad.id}><MoreVertical size={16} /></button>
+            <button
+              class="script-open"
+              onclick={() => open(pad)}
+              ondblclick={() => beginRename(pad)}
+              title={pad.title || "Untitled"}
+              ><span>{pad.title || "Untitled"}</span></button
+            >
+            {#if pad.pinned}<Pin
+                class="sidebar-pin"
+                size={13}
+                fill="currentColor"
+              />{/if}
+            <button
+              class="sidebar-file-more icon"
+              aria-label={"Actions for file " + (pad.title || "Untitled")}
+              aria-expanded={sidebarFileMenu === pad.id}
+              title="File actions"
+              onclick={() =>
+                (sidebarFileMenu = sidebarFileMenu === pad.id ? null : pad.id)}
+              ><MoreVertical size={16} /></button
+            >
             {#if sidebarFileMenu === pad.id}
-              <div class="sidebar-file-menu" use:sidebarMenuPosition role="group" aria-label={"Actions for file " + (pad.title || "Untitled")}>
-                <button onclick={() => { sidebarFileMenu = null; beginRename(pad); }}><Pencil size={15} /> Rename</button>
-                <button onclick={() => { sidebarFileMenu = null; pin(pad); }}><Pin size={15} /> {pad.pinned ? "Unpin" : "Pin"}</button>
-                <button onclick={() => { sidebarFileMenu = null; requestTrash(pad); }}><Trash2 size={15} /> Move to Trash</button>
-                <label class="sidebar-move-label">Move to
-                  <select aria-label={"Move " + (pad.title || "Untitled") + " to"} value="choose" onchange={(event) => { const destination = event.currentTarget.value; event.currentTarget.value = "choose"; if (destination !== "choose") void movePad(pad, destination || null); }}>
+              <div
+                class="sidebar-file-menu"
+                use:sidebarMenuPosition
+                role="group"
+                aria-label={"Actions for file " + (pad.title || "Untitled")}
+              >
+                <button
+                  onclick={() => {
+                    sidebarFileMenu = null;
+                    beginRename(pad);
+                  }}><Pencil size={15} /> Rename</button
+                >
+                <button
+                  onclick={() => {
+                    sidebarFileMenu = null;
+                    pin(pad);
+                  }}><Pin size={15} /> {pad.pinned ? "Unpin" : "Pin"}</button
+                >
+                <button
+                  onclick={() => {
+                    sidebarFileMenu = null;
+                    requestTrash(pad);
+                  }}><Trash2 size={15} /> Move to Trash</button
+                >
+                <label class="sidebar-move-label"
+                  >Move to
+                  <select
+                    aria-label={"Move " + (pad.title || "Untitled") + " to"}
+                    value="choose"
+                    onchange={(event) => {
+                      const destination = event.currentTarget.value;
+                      event.currentTarget.value = "choose";
+                      if (destination !== "choose")
+                        void movePad(pad, destination || null);
+                    }}
+                  >
                     <option value="choose" disabled>Choose a folder…</option>
                     <option value="" disabled={!pad.folder_id}>Files</option>
-                    {#each folders as folder (folder.id)}<option value={folder.id} disabled={pad.folder_id === folder.id}>{filePath({title: folder.name, folder_id: folder.parent_id}, folders)}</option>{/each}
+                    {#each folders as folder (folder.id)}<option
+                        value={folder.id}
+                        disabled={pad.folder_id === folder.id}
+                        >{filePath(
+                          { title: folder.name, folder_id: folder.parent_id },
+                          folders,
+                        )}</option
+                      >{/each}
                   </select>
                 </label>
               </div>
@@ -1552,40 +1882,126 @@
         </div>
       {/snippet}
       {#each folderRows as row (row.folder.id)}
-        <div class="folder-row" data-context-folder={row.folder.id} style:padding-left={row.depth * 16 + 5 + "px"}>
-          {#if selecting}<input class="sidebar-select" type="checkbox" aria-label={"Select folder " + row.folder.name} checked={selectedFolders.includes(row.folder.id)} onchange={() => toggleSelection(row.folder.id, "folder")} />{/if}
+        <div
+          class="folder-row"
+          data-context-folder={row.folder.id}
+          style:padding-left={row.depth * 16 + 5 + "px"}
+        >
+          {#if selecting}<input
+              class="sidebar-select"
+              type="checkbox"
+              aria-label={"Select folder " + row.folder.name}
+              checked={selectedFolders.includes(row.folder.id)}
+              onchange={() => toggleSelection(row.folder.id, "folder")}
+            />{/if}
           {#if folderRenameId === row.folder.id}
-            <input bind:this={folderRenameInput} class="sidebar-rename" bind:value={folderRenameValue} maxlength="200" aria-label={"Rename folder " + row.folder.name} onblur={() => commitFolderRename(row.folder)} onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); void commitFolderRename(row.folder); } else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); folderRenameId = null; } }} />
+            <input
+              bind:this={folderRenameInput}
+              class="sidebar-rename"
+              bind:value={folderRenameValue}
+              maxlength="200"
+              aria-label={"Rename folder " + row.folder.name}
+              onblur={() => commitFolderRename(row.folder)}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void commitFolderRename(row.folder);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  folderRenameId = null;
+                }
+              }}
+            />
           {:else}
-          <button
-            class="folder-toggle"
-            ondblclick={() => renameFolder(row.folder)}
-            aria-expanded={expandedFolders.includes(row.folder.id)}
-            onclick={() =>
-              (expandedFolders = expandedFolders.includes(row.folder.id)
-                ? expandedFolders.filter((id) => id !== row.folder.id)
-                : [...expandedFolders, row.folder.id])}
-          >
-            {#if expandedFolders.includes(row.folder.id)}<ChevronDown
-                size={15}
-              />{:else}<ChevronRight size={15} />{/if}<FolderIcon
-              size={17}
-              fill="currentColor"
-            /> <span>{row.folder.name}</span>
-          </button>
+            <button
+              class="folder-toggle"
+              ondblclick={() => renameFolder(row.folder)}
+              aria-expanded={expandedFolders.includes(row.folder.id)}
+              onclick={() =>
+                (expandedFolders = expandedFolders.includes(row.folder.id)
+                  ? expandedFolders.filter((id) => id !== row.folder.id)
+                  : [...expandedFolders, row.folder.id])}
+            >
+              {#if expandedFolders.includes(row.folder.id)}<ChevronDown
+                  size={15}
+                />{:else}<ChevronRight size={15} />{/if}<FolderIcon
+                size={17}
+                fill="currentColor"
+              /> <span>{row.folder.name}</span>
+            </button>
           {/if}
-          <button class="folder-more icon" aria-label={"Actions for folder " + row.folder.name} aria-expanded={folderMenu === row.folder.id} title="Folder actions" onclick={() => folderMenu = folderMenu === row.folder.id ? null : row.folder.id}><MoreVertical size={17} /></button>
+          <button
+            class="folder-more icon"
+            aria-label={"Actions for folder " + row.folder.name}
+            aria-expanded={folderMenu === row.folder.id}
+            title="Folder actions"
+            onclick={() =>
+              (folderMenu =
+                folderMenu === row.folder.id ? null : row.folder.id)}
+            ><MoreVertical size={17} /></button
+          >
           {#if folderMenu === row.folder.id}
-            <div class="folder-menu" use:sidebarMenuPosition role="group" aria-label={"Actions for folder " + row.folder.name}>
-              <button onclick={() => { folderMenu = null; create(row.folder.id); }}><FilePlus size={15} /> New file</button>
-              <button onclick={() => { folderMenu = null; folderParent = row.folder.id; folderName = ""; folderError = ""; folderDialogOpen = true; }}><FolderPlus size={15} /> New subfolder</button>
-              <button onclick={() => { folderMenu = null; renameFolder(row.folder); }}><Pencil size={15} /> Rename folder</button>
-              <button onclick={() => { folderMenu = null; deleteFolder(row.folder); }}><Trash2 size={15} /> Delete folder</button>
-              <label class="sidebar-move-label">Move to
-                <select aria-label={"Move folder " + row.folder.name + " to"} value="choose" onchange={(event) => { const destination = event.currentTarget.value; event.currentTarget.value = "choose"; if (destination !== "choose") void moveFolder(row.folder, destination || null); }}>
+            <div
+              class="folder-menu"
+              use:sidebarMenuPosition
+              role="group"
+              aria-label={"Actions for folder " + row.folder.name}
+            >
+              <button
+                onclick={() => {
+                  folderMenu = null;
+                  create(row.folder.id);
+                }}><FilePlus size={15} /> New file</button
+              >
+              <button
+                onclick={() => {
+                  folderMenu = null;
+                  folderParent = row.folder.id;
+                  folderName = "";
+                  folderError = "";
+                  folderDialogOpen = true;
+                }}><FolderPlus size={15} /> New subfolder</button
+              >
+              <button
+                onclick={() => {
+                  folderMenu = null;
+                  renameFolder(row.folder);
+                }}><Pencil size={15} /> Rename folder</button
+              >
+              <button
+                onclick={() => {
+                  folderMenu = null;
+                  deleteFolder(row.folder);
+                }}><Trash2 size={15} /> Delete folder</button
+              >
+              <label class="sidebar-move-label"
+                >Move to
+                <select
+                  aria-label={"Move folder " + row.folder.name + " to"}
+                  value="choose"
+                  onchange={(event) => {
+                    const destination = event.currentTarget.value;
+                    event.currentTarget.value = "choose";
+                    if (destination !== "choose")
+                      void moveFolder(row.folder, destination || null);
+                  }}
+                >
                   <option value="choose" disabled>Choose a folder…</option>
-                  <option value="" disabled={!row.folder.parent_id}>Files</option>
-                  {#each folders.filter((f) => canMoveFolder(row.folder, f)) as destination (destination.id)}<option value={destination.id} disabled={row.folder.parent_id === destination.id}>{filePath({title: destination.name, folder_id: destination.parent_id}, folders)}</option>{/each}
+                  <option value="" disabled={!row.folder.parent_id}
+                    >Files</option
+                  >
+                  {#each folders.filter( (f) => canMoveFolder(row.folder, f), ) as destination (destination.id)}<option
+                      value={destination.id}
+                      disabled={row.folder.parent_id === destination.id}
+                      >{filePath(
+                        {
+                          title: destination.name,
+                          folder_id: destination.parent_id,
+                        },
+                        folders,
+                      )}</option
+                    >{/each}
                 </select>
               </label>
             </div>
@@ -1615,7 +2031,8 @@
         class="shortcuts-button"
         onclick={() => (shortcutsOpen = true)}
         aria-label="Keyboard shortcuts"
-        title="Keyboard shortcuts · Ctrl/⌘ + /"><Keyboard size={16} /> Shortcuts</button
+        title="Keyboard shortcuts · Ctrl/⌘ + /"
+        ><Keyboard size={16} /> Shortcuts</button
       >
       <button
         class="icon"
@@ -1701,9 +2118,24 @@
                 <h3>Padding</h3>
                 <p>Adjust the spacing around interface elements.</p>
                 <div class="settings-control-grid">
-                  <label class="padding-control">Padding <span>{preferences.padding}%</span><input type="range" min="20" max="100" step="5" bind:value={preferences.padding} /><span class="padding-endpoints"><span>Compact</span><span>Spacious</span></span></label>
+                  <label class="padding-control"
+                    >Padding <span>{preferences.padding}%</span><input
+                      type="range"
+                      min="20"
+                      max="100"
+                      step="5"
+                      bind:value={preferences.padding}
+                    /><span class="padding-endpoints"
+                      ><span>Compact</span><span>Spacious</span></span
+                    ></label
+                  >
                 </div>
-                <button class="setting-choice padding-reset" onclick={() => preferences.padding = defaultPreferences.padding}>Reset padding to default</button>
+                <button
+                  class="setting-choice padding-reset"
+                  onclick={() =>
+                    (preferences.padding = defaultPreferences.padding)}
+                  >Reset padding to default</button
+                >
               </section>
               <section class="settings-section">
                 <h3>Interface text</h3>
@@ -1894,7 +2326,11 @@
                   />{/if}</button
               ><button onclick={back} class="text-button writer-files"
                 ><ArrowLeft size={16} /> Files</button
-              >{/if}<span class="save-status" class:failed={!!saveError} role="status" aria-live="polite"
+              >{/if}<span
+              class="save-status"
+              class:failed={!!saveError}
+              role="status"
+              aria-live="polite"
               >{#if saving}<LoaderCircle size={13} class="spin" /> Saving{:else if saveError}<button
                   onclick={() => save()}>Retry save</button
                 >{:else if dirty}Unsaved{:else}<Check size={13} /> Saved{/if}</span
@@ -1906,13 +2342,16 @@
                 bind:this={titleInput}
                 aria-label="File title"
                 maxlength="200"
-                bind:value={active.title}
-                oninput={() => changed()}
-                onblur={() => (titleEditing = false)}
+                bind:value={titleValue}
+                onblur={commitTitle}
                 onkeydown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
                     titleInput.blur();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    titleEditing = false;
                   }
                 }}
                 placeholder="Untitled"
@@ -1922,7 +2361,10 @@
                 aria-label={"Rename " + (active.title || "Untitled")}
                 onclick={editTitle}>{active.title || "Untitled"}</button
               >{/if}<span class="writer-path" title={filePath(active, folders)}
-              >{filePath(active, folders).split(" / ").slice(0, -1).join(" / ")}</span
+              >{filePath(active, folders)
+                .split(" / ")
+                .slice(0, -1)
+                .join(" / ")}</span
             >
           </div>
           <div class="writer-actions">
@@ -2010,8 +2452,17 @@
               class="trash-bulk trash-button"
               onclick={() => (permanentDelete = "all")}
               aria-label="Permanently delete all files"
-              title="Permanently delete all files"><Trash2 size={16} /> Empty Trash</button
-            >{:else if filter !== "trash"}<button class="dashboard-select-button" aria-pressed={selecting} onclick={() => { selecting = !selecting; selectedFiles = []; selectedFolders = []; }}>{selecting ? "Done selecting" : "Select files"}</button>{/if}
+              title="Permanently delete all files"
+              ><Trash2 size={16} /> Empty Trash</button
+            >{:else if filter !== "trash"}<button
+              class="dashboard-select-button"
+              aria-pressed={selecting}
+              onclick={() => {
+                selecting = !selecting;
+                selectedFiles = [];
+                selectedFolders = [];
+              }}>{selecting ? "Done selecting" : "Select files"}</button
+            >{/if}
         </div>
         {#if filter === "trash"}
           {#if error}<div class="error-banner" role="alert">
@@ -2080,7 +2531,8 @@
                       class="trash-button"
                       onclick={() => (permanentDelete = [pad.id])}
                       aria-label={"Permanently delete " + pad.title}
-                      title="Permanently delete"><Trash2 size={16} /> Delete permanently</button
+                      title="Permanently delete"
+                      ><Trash2 size={16} /> Delete permanently</button
                     >
                   </div>
                 </div>
@@ -2089,14 +2541,70 @@
           {/if}
         {:else}
           {#if selecting}
-            <div class="dashboard-selection-actions" aria-label="Selected items actions">
-              <span>{selectedFiles.length} files{selectedFolders.length ? ` and ${selectedFolders.length} folders` : ""} selected</span>
-              <button disabled={!visible.length || selectionBusy} onclick={() => { const ids = new Set(visible.map(p => p.id)); selectedFiles = visible.every(p => selectedFiles.includes(p.id)) ? selectedFiles.filter(id => !ids.has(id)) : [...new Set([...selectedFiles, ...ids])]; }}>{visible.length && visible.every(p => selectedFiles.includes(p.id)) ? "Deselect visible" : "Select visible"}</button>
-              <button disabled={selectionBusy || !(selectedFiles.length + selectedFolders.length)} onclick={() => applySelection("delete")}>Delete</button>
-              <label>Move to <select aria-label="Move selected items to" value="choose" disabled={selectionBusy || !(selectedFiles.length + selectedFolders.length)} onchange={(event) => { const value = event.currentTarget.value; event.currentTarget.value = "choose"; if (value !== "choose") void applySelection("move", selectedFiles, selectedFolders, value || null); }}>
-                <option value="choose" disabled>Choose destination…</option><option value="">Files</option>
-                {#each folders.filter(f => selectedFolders.every(id => { const selected = folders.find(item => item.id === id); return selected ? canMoveFolder(selected, f) : false; })) as destination (destination.id)}<option value={destination.id}>{filePath({ title: destination.name, folder_id: destination.parent_id }, folders)}</option>{/each}
-              </select></label>
+            <div
+              class="dashboard-selection-actions"
+              aria-label="Selected items actions"
+            >
+              <span
+                >{selectedFiles.length} files{selectedFolders.length
+                  ? ` and ${selectedFolders.length} folders`
+                  : ""} selected</span
+              >
+              <button
+                disabled={!visible.length || selectionBusy}
+                onclick={() => {
+                  const ids = new Set(visible.map((p) => p.id));
+                  selectedFiles = visible.every((p) =>
+                    selectedFiles.includes(p.id),
+                  )
+                    ? selectedFiles.filter((id) => !ids.has(id))
+                    : [...new Set([...selectedFiles, ...ids])];
+                }}
+                >{visible.length &&
+                visible.every((p) => selectedFiles.includes(p.id))
+                  ? "Deselect visible"
+                  : "Select visible"}</button
+              >
+              <button
+                disabled={selectionBusy ||
+                  !(selectedFiles.length + selectedFolders.length)}
+                onclick={() => applySelection("delete")}>Delete</button
+              >
+              <label
+                >Move to <select
+                  aria-label="Move selected items to"
+                  value="choose"
+                  disabled={selectionBusy ||
+                    !(selectedFiles.length + selectedFolders.length)}
+                  onchange={(event) => {
+                    const value = event.currentTarget.value;
+                    event.currentTarget.value = "choose";
+                    if (value !== "choose")
+                      void applySelection(
+                        "move",
+                        selectedFiles,
+                        selectedFolders,
+                        value || null,
+                      );
+                  }}
+                >
+                  <option value="choose" disabled>Choose destination…</option
+                  ><option value="">Files</option>
+                  {#each folders.filter((f) => selectedFolders.every((id) => {
+                      const selected = folders.find((item) => item.id === id);
+                      return selected ? canMoveFolder(selected, f) : false;
+                    })) as destination (destination.id)}<option
+                      value={destination.id}
+                      >{filePath(
+                        {
+                          title: destination.name,
+                          folder_id: destination.parent_id,
+                        },
+                        folders,
+                      )}</option
+                    >{/each}
+                </select></label
+              >
             </div>
           {/if}
           <div class="library-toolbar">
@@ -2195,13 +2703,26 @@
                       <div
                         class="pad-card"
                         class:selected={selectedId === pad.id}
-                        class:bulk-selected={selecting && selectedFiles.includes(pad.id)}
+                        class:bulk-selected={selecting &&
+                          selectedFiles.includes(pad.id)}
                         class:selection-mode={selecting}
                         data-pad-id={pad.id}
                         data-context-file={pad.id}
                       >
-                        {#if selecting}<input class="dashboard-file-select" type="checkbox" aria-label={"Select file " + (pad.title || "Untitled")} checked={selectedFiles.includes(pad.id)} onchange={() => toggleSelection(pad.id, "file")} />{/if}
-                        <button class="pad-open" onclick={() => selecting ? toggleSelection(pad.id, "file") : open(pad)}
+                        {#if selecting}<input
+                            class="dashboard-file-select"
+                            type="checkbox"
+                            aria-label={"Select file " +
+                              (pad.title || "Untitled")}
+                            checked={selectedFiles.includes(pad.id)}
+                            onchange={() => toggleSelection(pad.id, "file")}
+                          />{/if}
+                        <button
+                          class="pad-open"
+                          onclick={() =>
+                            selecting
+                              ? toggleSelection(pad.id, "file")
+                              : open(pad)}
                           ><FileText class="card-file-icon" size={25} />
                           <h3>{pad.title}</h3>
                           <span
@@ -2237,35 +2758,45 @@
                             }}
                           />{/if}
                         {#if !selecting}<button
-                          class="card-pin icon"
-                          class:filled={pad.pinned}
-                          onclick={() => pin(pad)}
-                          aria-label={pad.pinned
-                            ? "Unpin " + pad.title
-                            : "Pin " + pad.title}><Pin size={14} /></button
-                        ><button
-                          class="card-more icon"
-                          onclick={() =>
-                            (cardMenu = cardMenu === pad.id ? null : pad.id)}
-                          aria-label={"More actions for " + pad.title}
-                          aria-expanded={cardMenu === pad.id}
-                          ><MoreVertical size={18} /></button
-                        >
-                        {#if cardMenu === pad.id}<div
-                            class="card-menu"
-                            role="group"
-                            aria-label={"Actions for " + pad.title}
+                            class="card-pin icon"
+                            class:filled={pad.pinned}
+                            onclick={() => pin(pad)}
+                            aria-label={pad.pinned
+                              ? "Unpin " + pad.title
+                              : "Pin " + pad.title}><Pin size={14} /></button
+                          ><button
+                            class="card-more icon"
+                            onclick={() =>
+                              (cardMenu = cardMenu === pad.id ? null : pad.id)}
+                            aria-label={"More actions for " + pad.title}
+                            aria-expanded={cardMenu === pad.id}
+                            ><MoreVertical size={18} /></button
                           >
-                            <button onclick={() => { cardMenu = null; beginRename(pad, "card"); }}><Pencil size={14} /> Rename</button>
-                            <button onclick={() => { cardMenu = null; requestTrash(pad); }}><Trash2 size={14} /> Move to Trash</button>
-                            <span>Move to</span><button
-                              onclick={() => movePad(pad, null)}>Files</button
+                          {#if cardMenu === pad.id}<div
+                              class="card-menu"
+                              role="group"
+                              aria-label={"Actions for " + pad.title}
                             >
-                            {#each folders as folder}<button
-                                onclick={() => movePad(pad, folder.id)}
-                                >{folder.name}</button
-                              >{/each}
-                          </div>{/if}{/if}
+                              <button
+                                onclick={() => {
+                                  cardMenu = null;
+                                  beginRename(pad, "card");
+                                }}><Pencil size={14} /> Rename</button
+                              >
+                              <button
+                                onclick={() => {
+                                  cardMenu = null;
+                                  requestTrash(pad);
+                                }}><Trash2 size={14} /> Move to Trash</button
+                              >
+                              <span>Move to</span><button
+                                onclick={() => movePad(pad, null)}>Files</button
+                              >
+                              {#each folders as folder}<button
+                                  onclick={() => movePad(pad, folder.id)}
+                                  >{folder.name}</button
+                                >{/each}
+                            </div>{/if}{/if}
                       </div>
                     {/each}
                   </div>
@@ -2278,31 +2809,196 @@
   </main>
 </div>
 {#if contextMenu}
-  {@const item = pads.find(p => p.id === contextMenu?.id)}
-  {@const folder = folders.find(f => f.id === contextMenu?.id)}
-  {@const deleted = trash.find(p => p.id === contextMenu?.id)}
-  <div class="context-menu" bind:this={contextNode} style:left={contextMenu.x + "px"} style:top={contextMenu.y + "px"} role="menu" tabindex="-1" aria-label="Context actions" onkeydown={contextKey}>
+  {@const item = pads.find((p) => p.id === contextMenu?.id)}
+  {@const folder = folders.find((f) => f.id === contextMenu?.id)}
+  {@const deleted = trash.find((p) => p.id === contextMenu?.id)}
+  <div
+    class="context-menu"
+    bind:this={contextNode}
+    style:left={contextMenu.x + "px"}
+    style:top={contextMenu.y + "px"}
+    role="menu"
+    tabindex="-1"
+    aria-label="Context actions"
+    onkeydown={contextKey}
+  >
     {#if contextMenu.kind === "file" && item}
-      <button role="menuitem" onclick={() => { closeContextMenu(); void open(item); }}><FileText size={15} /> Open</button>
-      <button role="menuitem" onclick={() => { const source = contextMenu?.source; closeContextMenu(); void beginRename(item, source); }}><Pencil size={15} /> Rename</button>
-      <button role="menuitem" onclick={() => { closeContextMenu(); void pin(item); }}><Pin size={15} /> {item.pinned ? "Unpin" : "Pin"}</button>
-      <button role="menuitem" onclick={() => { closeContextMenu(); requestTrash(item); }}><Trash2 size={15} /> Move to Trash</button>
-      <label>Move to <select aria-label="Move file to" value="choose" onchange={(e) => { const destination = e.currentTarget.value; if (destination !== "choose") { closeContextMenu(); void movePad(item, destination || null); } }}><option value="choose" disabled>Choose a folder?</option><option value="" disabled={!item.folder_id}>Files</option>{#each folders as destination}<option value={destination.id} disabled={item.folder_id === destination.id}>{filePath({title: destination.name, folder_id: destination.parent_id}, folders)}</option>{/each}</select></label>
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          void open(item);
+        }}><FileText size={15} /> Open</button
+      >
+      <button
+        role="menuitem"
+        onclick={() => {
+          const source = contextMenu?.source;
+          closeContextMenu();
+          void beginRename(item, source);
+        }}><Pencil size={15} /> Rename</button
+      >
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          void pin(item);
+        }}><Pin size={15} /> {item.pinned ? "Unpin" : "Pin"}</button
+      >
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          requestTrash(item);
+        }}><Trash2 size={15} /> Move to Trash</button
+      >
+      <label
+        >Move to <select
+          aria-label="Move file to"
+          value="choose"
+          onchange={(e) => {
+            const destination = e.currentTarget.value;
+            if (destination !== "choose") {
+              closeContextMenu();
+              void movePad(item, destination || null);
+            }
+          }}
+          ><option value="choose" disabled>Choose a folder?</option><option
+            value=""
+            disabled={!item.folder_id}>Files</option
+          >{#each folders as destination}<option
+              value={destination.id}
+              disabled={item.folder_id === destination.id}
+              >{filePath(
+                { title: destination.name, folder_id: destination.parent_id },
+                folders,
+              )}</option
+            >{/each}</select
+        ></label
+      >
     {:else if contextMenu.kind === "folder" && folder}
-      <button role="menuitem" onclick={() => { closeContextMenu(); void create(folder.id); }}><FilePlus size={15} /> New file</button>
-      <button role="menuitem" onclick={() => { closeContextMenu(); folderParent = folder.id; folderName = ""; folderError = ""; folderDialogOpen = true; }}><FolderPlus size={15} /> New subfolder</button>
-      <button role="menuitem" onclick={() => { closeContextMenu(); void renameFolder(folder); }}><Pencil size={15} /> Rename folder</button>
-      <button role="menuitem" onclick={() => { closeContextMenu(); void deleteFolder(folder); }}><Trash2 size={15} /> Delete folder</button>
-      <label>Move to <select aria-label="Move folder to" value="choose" onchange={(e) => { const destination = e.currentTarget.value; if (destination !== "choose") { closeContextMenu(); void moveFolder(folder, destination || null); } }}><option value="choose" disabled>Choose a folder?</option><option value="" disabled={!folder.parent_id}>Files</option>{#each folders.filter(f => canMoveFolder(folder, f)) as destination}<option value={destination.id} disabled={folder.parent_id === destination.id}>{filePath({title: destination.name, folder_id: destination.parent_id}, folders)}</option>{/each}</select></label>
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          void create(folder.id);
+        }}><FilePlus size={15} /> New file</button
+      >
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          folderParent = folder.id;
+          folderName = "";
+          folderError = "";
+          folderDialogOpen = true;
+        }}><FolderPlus size={15} /> New subfolder</button
+      >
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          void renameFolder(folder);
+        }}><Pencil size={15} /> Rename folder</button
+      >
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          void deleteFolder(folder);
+        }}><Trash2 size={15} /> Delete folder</button
+      >
+      <label
+        >Move to <select
+          aria-label="Move folder to"
+          value="choose"
+          onchange={(e) => {
+            const destination = e.currentTarget.value;
+            if (destination !== "choose") {
+              closeContextMenu();
+              void moveFolder(folder, destination || null);
+            }
+          }}
+          ><option value="choose" disabled>Choose a folder?</option><option
+            value=""
+            disabled={!folder.parent_id}>Files</option
+          >{#each folders.filter( (f) => canMoveFolder(folder, f), ) as destination}<option
+              value={destination.id}
+              disabled={folder.parent_id === destination.id}
+              >{filePath(
+                { title: destination.name, folder_id: destination.parent_id },
+                folders,
+              )}</option
+            >{/each}</select
+        ></label
+      >
     {:else if contextMenu.kind === "trash" && deleted}
-      <button role="menuitem" onclick={() => { closeContextMenu(); trashPreview = deleted; }}><Eye size={15} /> Preview</button>
-      <button role="menuitem" onclick={() => { closeContextMenu(); void restore(deleted); }}><RotateCcw size={15} /> Restore</button>
-      <button role="menuitem" onclick={() => { closeContextMenu(); permanentDelete = [deleted.id]; }}><Trash2 size={15} /> Delete permanently</button>
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          trashPreview = deleted;
+        }}><Eye size={15} /> Preview</button
+      >
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          void restore(deleted);
+        }}><RotateCcw size={15} /> Restore</button
+      >
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          permanentDelete = [deleted.id];
+        }}><Trash2 size={15} /> Delete permanently</button
+      >
     {:else if contextMenu.kind === "background"}
-      <button role="menuitem" disabled={creating} onclick={() => { closeContextMenu(); void create(); }}><FilePlus size={15} /> New file</button>
-      <button role="menuitem" onclick={() => { closeContextMenu(); folderParent = null; folderName = ""; folderError = ""; folderDialogOpen = true; }}><FolderPlus size={15} /> New folder</button>
+      <button
+        role="menuitem"
+        disabled={creating}
+        onclick={() => {
+          closeContextMenu();
+          void create();
+        }}><FilePlus size={15} /> New file</button
+      >
+      <button
+        role="menuitem"
+        onclick={() => {
+          closeContextMenu();
+          folderParent = null;
+          folderName = "";
+          folderError = "";
+          folderDialogOpen = true;
+        }}><FolderPlus size={15} /> New folder</button
+      >
     {/if}
   </div>
+{/if}
+{#if confirmation}
+  <dialog
+    use:openDialog={() => finishConfirmation(false)}
+    class="modal"
+    oncancel={(event) => {
+      event.preventDefault();
+      finishConfirmation(false);
+    }}
+    aria-modal="true"
+    aria-labelledby="confirmation-title"
+    aria-describedby="confirmation-message"
+  >
+    <h2 id="confirmation-title">{confirmation.title}</h2>
+    <p id="confirmation-message">{confirmation.message}</p>
+    <div class="modal-actions">
+      <button class="text-button" onclick={() => finishConfirmation(false)}
+        >Cancel</button
+      >
+      <button class="primary" onclick={() => finishConfirmation(true)}
+        >{confirmation.accept}</button
+      >
+    </div>
+  </dialog>
 {/if}
 {#if notice}<div class="notice" role="status">
     {notice}<button
@@ -2325,7 +3021,9 @@
     aria-label="New folder"
   >
     <h2>New folder</h2>
-    {#if folderParent}<p>Inside {folders.find((f) => f.id === folderParent)?.name}</p>{/if}
+    {#if folderParent}<p>
+        Inside {folders.find((f) => f.id === folderParent)?.name}
+      </p>{/if}
     <form
       onsubmit={(event) => {
         event.preventDefault();

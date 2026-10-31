@@ -24,7 +24,9 @@ flowchart LR
 | --- | --- |
 | `src/App.svelte` | Sidebar, dashboard, editor shell, Trash, backup controls, sorting, state restoration, autosave, and keyboard shortcuts. |
 | `src/lib/Editor.svelte` | CodeMirror Markdown editor, syntax highlighting, selection and formatting commands. Sends content changes to `App.svelte`. |
-| `src/lib/markdown.ts` | Renders Read mode and Trash previews with `marked` and sanitizes HTML with DOMPurify. |
+| `src/lib/markdown.ts` | Renders Read mode and Trash previews with `markdown-it` and sanitizes HTML with DOMPurify. |
+| `src/lib/file-names.ts` | Shared filename validation used by the UI and storage layer. |
+| `src/lib/live-preview.ts` | CodeMirror decorations for the Write-mode Markdown preview. |
 | `src/lib/types.ts` | Shared `Pad` and `TrashedPad` shapes and word count. |
 | `src/style.css` | Theme variables, layout, responsive styles, and component styling. Later rules override some earlier styles. |
 | `server/index.ts` | Starts the Bun server, chooses the data file, routes `/api`, and serves `dist/` in a built app. |
@@ -46,7 +48,7 @@ flowchart LR
 
 ## Data and browser state
 
-By default, the server writes active content to `saves/<title>.md`, deleted content to `trash/<title>.md`, and metadata to `data/scripts.json`. Name collisions receive numbered filenames. The metadata file is version 3 and holds IDs, titles, filenames, pin state, revisions, and timestamps; content stays in the Markdown files. `JsonPadStore.open()` reads the index and files at startup and migrates supported older layouts. Store writes use temporary files and rename them into place. Mutations are serialized within one server process.
+By default, the server writes active content to `saves/<title>.md`, deleted content to `trash/<title>.md`, and metadata to `data/scripts.json`. New and renamed files must have unique, filename-safe titles across the library and Trash. Automatic new files and restored backup copies get a numbered title when needed. Existing legacy titles are left intact until renamed. The metadata file is version 3 and holds IDs, titles, filenames, pin state, revisions, and timestamps; content stays in the Markdown files. `JsonPadStore.open()` reads the index and files at startup and migrates supported older layouts. Store writes use temporary files and rename them into place. Mutations are serialized within one server process.
 
 `RUNE_DATA_FILE` can point to a different index file. `LIBRETTO_DATA_FILE` and `CARETI_DATA_FILE` remain accepted as legacy alternatives. The `saves/` and `trash/` directories are derived from the index location. Run only one server process per data file. The data directories, `dist/`, and `node_modules/` are ignored by Git; they are not part of the repository.
 
@@ -73,3 +75,11 @@ The API validates IDs and write payloads. A single script is limited to 2 MB of 
 Install dependencies with `bun install`, then use `bun run dev` and open `http://127.0.0.1:4173`. For a production bundle, run `bun run build`, then `bun start` and open `http://127.0.0.1:3001`. `PORT`, `HOST`, and the optional data-file setting are shown in `.env.example`.
 
 Run `bun run check` for Svelte and TypeScript diagnostics and `bun test` for the storage/API and Markdown tests. `bun run build` confirms the client bundles successfully.
+
+## Contributor notes
+
+- Keep reusable visual rules and spacing tokens in `src/style.css`; the padding preference scales the compact layout. Check narrow windows, keyboard focus, dark mode, and the editor when changing styles.
+- File titles become filenames. Validate them in the shared helper and enforce uniqueness inside the store's serialized mutation, not just in the browser. Trash reserves its names. Never overwrite unrelated files in the chosen storage folder. Backup restore assigns distinct safe titles to imported copies.
+- The editor stores Markdown source, not rendered HTML. Live-preview decorations may hide syntax, but must never mutate the document or break editing, selection, copy/paste, or undo.
+- Use the existing HTML dialogs and notices for user-facing decisions and errors. Preserve confirmation for destructive actions.
+- Before submitting changes, run `bun run check`, `bun test`, and `bun run build`. Add focused tests for behavioral changes, especially storage mutations and recovery.

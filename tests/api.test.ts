@@ -130,10 +130,12 @@ test('Simultaneous saves serialize; only one stale revision commits',async()=>{
 });
 test('Titles name active files, collisions get suffixes, and Trash moves content',async()=>{
  const a=await store.create();const b=await store.create();
- expect((await readdir(join(dir,'saves'))).filter(n=>n.startsWith('Untitled'))).toEqual(['Untitled (2).md','Untitled.md']);
+ expect(a.title).not.toBe(b.title);
+ expect(await readFile(join(dir,'saves',a.title+'.md'),'utf8')).toBe(a.content);
+ expect(await readFile(join(dir,'saves',b.title+'.md'),'utf8')).toBe(b.content);
  const renamed=await (await req('/pads/'+a.id,'PUT',{...a,title:'Notes',content:'first'})).json();
  expect(await readFile(join(dir,'saves','Notes.md'),'utf8')).toBe('first');
- expect((await readdir(join(dir,'saves'))).includes('Untitled.md')).toBe(false);
+ expect((await readdir(join(dir,'saves'))).includes(a.title+'.md')).toBe(false);
  await req('/pads/'+a.id,'DELETE');
  expect((await readdir(join(dir,'saves'))).includes('Notes.md')).toBe(false);
  expect(await readFile(join(dir,'trash','Notes.md'),'utf8')).toBe('first');
@@ -173,7 +175,7 @@ test('Previous JSON shape upgrades without losing a file',async()=>{
  const loaded=await JsonPadStore.open(previous);
  expect(loaded.get(existing.id)?.title).toBe(existing.title);
  expect(JSON.parse(await readFile(previous,'utf8')).scripts[0].content).toBeUndefined();
- expect(await readFile(join(dir,'saves','Untitled.md'),'utf8')).toBe(existing.content);
+ expect(await readFile(join(dir,'saves',existing.title+'.md'),'utf8')).toBe(existing.content);
  await store.delete(existing.id);
 });
 test('Partially migrated version 2 data opens title-based files without losing content',async()=>{
@@ -290,4 +292,58 @@ test('Folder browsing returns the selection or cancellation and rejects cross-or
  expect(await (await browse()).json()).toEqual({path:null});
  expect((await browse('https://untrusted.example')).status).toBe(403);
  expect(calls).toBe(2);
+});
+
+test('file names are unique, safe and protected from existing filesystem files',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rune-names-'));
+ try {
+  const index=join(root,'data','scripts.json');const names=await JsonPadStore.open(index);const api=createApi(names);
+  const call=(path:string,method='GET',body?:unknown)=>api(new Request('http://localhost/api'+path,{method,headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)}));
+  const make=(title:string)=>call('/pads','POST',{title,content:'keep',folder_id:null});
+  const first=await (await make('Café')).json();
+  for(const name of ['cafe\u0301','bad/name','CON','LPT1.txt','trailing.','', 'x'.repeat(181)]) expect((await make(name)).status).toBe(400);
+  const second=await (await make('Other')).json();
+  expect((await call('/pads/'+second.id,'PUT',{...second,title:'CAFÉ'})).status).toBe(400);
+  expect((await call('/pads/'+second.id,'PUT',{...second,title:'bad:name'})).status).toBe(400);
+  expect((await JsonPadStore.open(index)).get(second.id)?.title).toBe('Other');
+  await call('/pads/'+first.id,'DELETE');
+  expect((await make('CAFÉ')).status).toBe(400);
+  await writeFile(join(root,'saves','External.md'),'untouched');
+  expect((await make('External')).status).toBe(400);
+  expect(await readFile(join(root,'saves','External.md'),'utf8')).toBe('untouched');
+  const generated=await (await call('/pads','POST',{title:'Other',content:'',folder_id:null,autoTitle:true})).json();
+  expect(generated.title).toBe('Other (2)');
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('concurrent creates cannot claim the same title and backup copies get unique names',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rune-name-race-'));
+ try {
+  const index=join(root,'data','scripts.json');const store=await JsonPadStore.open(index);
+  const results=await Promise.allSettled([store.create({title:'Notes',content:'first',folder_id:null}),store.create({title:'notes',content:'second',folder_id:null})]);
+  expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+  expect(results.filter(r=>r.status==='rejected')).toHaveLength(1);
+  const original=store.list()[0];const backup=await store.backup();
+  await store.importBackup(backup);
+  expect(new Set(store.list().map(p=>p.title.toLowerCase())).size).toBe(2);
+  expect(store.list().map(p=>p.title)).toContain('Notes (2)');
+  expect(store.get(original.id)?.content).toBe(original.content);
+  const reopened=await JsonPadStore.open(index);
+  expect(reopened.list().map(p=>p.content)).toEqual([original.content,original.content]);
+ } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('legacy titles remain editable without being silently renamed',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rune-legacy-name-'));
+ try {
+  const index=join(root,'data','scripts.json');await mkdir(join(root,'data'),{recursive:true});await mkdir(join(root,'saves'),{recursive:true});
+  const id=crypto.randomUUID(), now=new Date().toISOString();
+  await writeFile(index,JSON.stringify({version:3,scripts:[{id,title:'CON',filename:'legacy.md',folder_id:null,pinned:false,revision:1,created_at:now,updated_at:now}],trash:[],folders:[]}));
+  await writeFile(join(root,'saves','legacy.md'),'original');
+  const store=await JsonPadStore.open(index), pad=store.get(id)!;
+  const updated=await store.update(id,{...pad,content:'edited'});
+  expect(updated.status).toBe('saved');
+  expect((await JsonPadStore.open(index)).get(id)?.title).toBe('CON');
+  expect(await readFile(join(root,'saves','legacy.md'),'utf8')).toBe('edited');
+ } finally {await rm(root,{recursive:true,force:true});}
 });

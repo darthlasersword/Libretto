@@ -1,4 +1,5 @@
 import type { JsonPadStore } from './json-store';
+import { FileNameError } from '../src/lib/file-names';
 const json = (data:unknown, status=200) => Response.json(data,{status});
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string>=new Set(), setup?: { status: () => { required: boolean; path: string }; configure: (path: string) => Promise<JsonPadStore>; chooseFolder?: () => Promise<string | null>; reset?: () => Promise<void> }) {
@@ -131,6 +132,7 @@ export function createApi(store: JsonPadStore, allowedOrigins:ReadonlySet<string
    return json({error:'Method not allowed'},405);
   } catch(error) {
    if(error instanceof SyntaxError) return json({error:'Invalid JSON'},400);
+   if(error instanceof FileNameError) return json({error:error.message},400);
    if(error instanceof TypeError && error.message==='Invalid Rune backup file.') return json({error:error.message},400);
    if(error instanceof TypeError && error.message==='Folder not found.') return json({error:error.message},400);
    if(error instanceof TypeError && error.message==='Invalid folder destination.') return json({error:error.message},400);
