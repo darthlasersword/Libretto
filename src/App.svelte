@@ -58,9 +58,15 @@
   let pads: Pad[] = [];
   let folders: Folder[] = [];
   let expandedFolders: string[] = [];
+  let contextMenu: { x: number; y: number; kind: "file" | "folder" | "trash" | "background"; id?: string; source?: "sidebar" | "card" } | null = null;
+  let contextNode: HTMLDivElement;
+  let contextReturnFocus: HTMLElement | null = null;
   let cardMenu: string | null = null;
   let folderMenu: string | null = null;
   let sidebarFileMenu: string | null = null;
+  let folderRenameId: string | null = null;
+  let folderRenameValue = "";
+  let folderRenameInput: HTMLInputElement;
   let folderParent: string | null = null;
   let selecting = false;
   let selectedFiles: string[] = [];
@@ -650,9 +656,13 @@
     menu = false;
     titleEditing = false;
   }
-  function setReading(value: boolean) {
+  async function setReading(value: boolean) {
     reading = value;
     if (active) readModes = { ...readModes, [active.id]: value };
+    if (!value) {
+      await tick();
+      if (!reading && active) editor?.focusEditor();
+    }
   }
   async function showFilter(
     next: "all" | "pinned" | "trash",
@@ -705,8 +715,17 @@
     }
   }
   async function renameFolder(folder: Folder) {
-    const name = prompt("Folder name:", folder.name);
-    if (name === null || !name.trim() || name.trim() === folder.name) return;
+    folderRenameId = folder.id;
+    folderRenameValue = folder.name;
+    await tick();
+    folderRenameInput?.focus();
+    folderRenameInput?.select();
+  }
+  async function commitFolderRename(folder: Folder) {
+    if (folderRenameId !== folder.id) return;
+    const name = folderRenameValue.trim();
+    folderRenameId = null;
+    if (!name || name === folder.name) return;
     try {
       const updated: Folder = await request("/folders/" + folder.id, {
         method: "PUT",
@@ -1129,6 +1148,37 @@
     const reveal = !(event.target as Element).closest(".cm-editor");
     if (focusReveal !== reveal) focusReveal = reveal;
   }
+  async function showContextMenu(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    if (target.closest('input, textarea, select, [contenteditable="true"], dialog, .context-menu')) return;
+    const file = target.closest<HTMLElement>('[data-context-file]');
+    const folder = target.closest<HTMLElement>('[data-context-folder]');
+    const deleted = target.closest<HTMLElement>('[data-context-trash]');
+    const kind = file ? "file" : folder ? "folder" : deleted ? "trash" : "background";
+    if (setupRequired || settingsOpen || (kind === "background" && (active || !target.closest(".dashboard, .script-list")))) return;
+    event.preventDefault();
+    contextReturnFocus = document.activeElement as HTMLElement;
+    cardMenu = folderMenu = sidebarFileMenu = null;
+    menu = sortMenu = false;
+    contextMenu = { x: event.clientX, y: event.clientY, kind, id: file?.dataset.contextFile ?? folder?.dataset.contextFolder ?? deleted?.dataset.contextTrash, source: file?.classList.contains("pad-card") ? "card" : "sidebar" };
+    await tick();
+    if (!contextNode || !contextMenu) return;
+    contextMenu = { ...contextMenu, x: Math.max(8, Math.min(event.clientX, innerWidth - contextNode.offsetWidth - 8)), y: Math.max(8, Math.min(event.clientY, innerHeight - contextNode.offsetHeight - 8)) };
+    contextNode.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }
+  function closeContextMenu(restoreFocus = false) {
+    contextMenu = null;
+    if (restoreFocus) contextReturnFocus?.focus();
+  }
+  function contextKey(event: KeyboardEvent) {
+    if (!contextNode || (event.target as HTMLElement).tagName === "SELECT" || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const items = Array.from(contextNode.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+    if (!items.length) return;
+    event.preventDefault();
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+    items[next].focus();
+  }
   function clickOutsideMenu(event: PointerEvent) {
     const target = event.target as Element;
     if (cardMenu && !target.closest(".card-menu, .card-more")) cardMenu = null;
@@ -1382,7 +1432,9 @@
   onkeydown={keyboard}
   onbeforeunload={beforeUnload}
   onpointerdown={clickOutsideMenu}
+  onpointerdowncapture={(event) => { if (contextMenu && contextNode && !contextNode.contains(event.target as Node)) closeContextMenu(); }}
   onpointermove={revealFocusControls}
+  oncontextmenu={showContextMenu}
 />
 <div
   class:focused={focus}
@@ -1473,13 +1525,13 @@
     {/if}
     <div class="script-list">
       {#snippet sidebarFile(pad: Pad, depth: number)}
-        <div class="sidebar-file" class:current={active?.id === pad.id && !settingsOpen} style:padding-left={depth * 16 + 8 + "px"}>
+        <div class="sidebar-file" data-context-file={pad.id} class:current={active?.id === pad.id && !settingsOpen} style:padding-left={depth * 16 + 8 + "px"}>
           {#if selecting}<input class="sidebar-select" type="checkbox" aria-label={"Select file " + (pad.title || "Untitled")} checked={selectedFiles.includes(pad.id)} onchange={() => toggleSelection(pad.id, "file")} />{/if}
           {#if renameId === pad.id && renameSource === "sidebar"}
             <input bind:this={renameInput} class="sidebar-rename" bind:value={renameValue} maxlength="200" aria-label={"Rename " + pad.title} onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitRename(pad.id); } else if (e.key === "Escape") { e.preventDefault(); cancelRename(); } }} onblur={() => commitRename(pad.id)} />
           {:else}
             <FileText size={16} />
-            <button class="script-open" onclick={() => open(pad)} title={pad.title || "Untitled"}><span>{pad.title || "Untitled"}</span></button>
+            <button class="script-open" onclick={() => open(pad)} ondblclick={() => beginRename(pad)} title={pad.title || "Untitled"}><span>{pad.title || "Untitled"}</span></button>
             {#if pad.pinned}<Pin class="sidebar-pin" size={13} fill="currentColor" />{/if}
             <button class="sidebar-file-more icon" aria-label={"Actions for file " + (pad.title || "Untitled")} aria-expanded={sidebarFileMenu === pad.id} title="File actions" onclick={() => sidebarFileMenu = sidebarFileMenu === pad.id ? null : pad.id}><MoreVertical size={16} /></button>
             {#if sidebarFileMenu === pad.id}
@@ -1500,10 +1552,14 @@
         </div>
       {/snippet}
       {#each folderRows as row (row.folder.id)}
-        <div class="folder-row" style:padding-left={row.depth * 16 + 5 + "px"}>
+        <div class="folder-row" data-context-folder={row.folder.id} style:padding-left={row.depth * 16 + 5 + "px"}>
           {#if selecting}<input class="sidebar-select" type="checkbox" aria-label={"Select folder " + row.folder.name} checked={selectedFolders.includes(row.folder.id)} onchange={() => toggleSelection(row.folder.id, "folder")} />{/if}
+          {#if folderRenameId === row.folder.id}
+            <input bind:this={folderRenameInput} class="sidebar-rename" bind:value={folderRenameValue} maxlength="200" aria-label={"Rename folder " + row.folder.name} onblur={() => commitFolderRename(row.folder)} onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); void commitFolderRename(row.folder); } else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); folderRenameId = null; } }} />
+          {:else}
           <button
             class="folder-toggle"
+            ondblclick={() => renameFolder(row.folder)}
             aria-expanded={expandedFolders.includes(row.folder.id)}
             onclick={() =>
               (expandedFolders = expandedFolders.includes(row.folder.id)
@@ -1517,6 +1573,7 @@
               fill="currentColor"
             /> <span>{row.folder.name}</span>
           </button>
+          {/if}
           <button class="folder-more icon" aria-label={"Actions for folder " + row.folder.name} aria-expanded={folderMenu === row.folder.id} title="Folder actions" onclick={() => folderMenu = folderMenu === row.folder.id ? null : row.folder.id}><MoreVertical size={17} /></button>
           {#if folderMenu === row.folder.id}
             <div class="folder-menu" use:sidebarMenuPosition role="group" aria-label={"Actions for folder " + row.folder.name}>
@@ -1983,7 +2040,7 @@
             </div>
             <div class="trash-list">
               {#each trash as pad (pad.id)}
-                <div class="trash-row">
+                <div class="trash-row" data-context-trash={pad.id}>
                   <button
                     class="trash-select"
                     class:selected={trashSelection.includes(pad.id)}
@@ -2141,6 +2198,7 @@
                         class:bulk-selected={selecting && selectedFiles.includes(pad.id)}
                         class:selection-mode={selecting}
                         data-pad-id={pad.id}
+                        data-context-file={pad.id}
                       >
                         {#if selecting}<input class="dashboard-file-select" type="checkbox" aria-label={"Select file " + (pad.title || "Untitled")} checked={selectedFiles.includes(pad.id)} onchange={() => toggleSelection(pad.id, "file")} />{/if}
                         <button class="pad-open" onclick={() => selecting ? toggleSelection(pad.id, "file") : open(pad)}
@@ -2219,6 +2277,33 @@
     {/if}
   </main>
 </div>
+{#if contextMenu}
+  {@const item = pads.find(p => p.id === contextMenu?.id)}
+  {@const folder = folders.find(f => f.id === contextMenu?.id)}
+  {@const deleted = trash.find(p => p.id === contextMenu?.id)}
+  <div class="context-menu" bind:this={contextNode} style:left={contextMenu.x + "px"} style:top={contextMenu.y + "px"} role="menu" tabindex="-1" aria-label="Context actions" onkeydown={contextKey}>
+    {#if contextMenu.kind === "file" && item}
+      <button role="menuitem" onclick={() => { closeContextMenu(); void open(item); }}><FileText size={15} /> Open</button>
+      <button role="menuitem" onclick={() => { const source = contextMenu?.source; closeContextMenu(); void beginRename(item, source); }}><Pencil size={15} /> Rename</button>
+      <button role="menuitem" onclick={() => { closeContextMenu(); void pin(item); }}><Pin size={15} /> {item.pinned ? "Unpin" : "Pin"}</button>
+      <button role="menuitem" onclick={() => { closeContextMenu(); requestTrash(item); }}><Trash2 size={15} /> Move to Trash</button>
+      <label>Move to <select aria-label="Move file to" value="choose" onchange={(e) => { const destination = e.currentTarget.value; if (destination !== "choose") { closeContextMenu(); void movePad(item, destination || null); } }}><option value="choose" disabled>Choose a folder?</option><option value="" disabled={!item.folder_id}>Files</option>{#each folders as destination}<option value={destination.id} disabled={item.folder_id === destination.id}>{filePath({title: destination.name, folder_id: destination.parent_id}, folders)}</option>{/each}</select></label>
+    {:else if contextMenu.kind === "folder" && folder}
+      <button role="menuitem" onclick={() => { closeContextMenu(); void create(folder.id); }}><FilePlus size={15} /> New file</button>
+      <button role="menuitem" onclick={() => { closeContextMenu(); folderParent = folder.id; folderName = ""; folderError = ""; folderDialogOpen = true; }}><FolderPlus size={15} /> New subfolder</button>
+      <button role="menuitem" onclick={() => { closeContextMenu(); void renameFolder(folder); }}><Pencil size={15} /> Rename folder</button>
+      <button role="menuitem" onclick={() => { closeContextMenu(); void deleteFolder(folder); }}><Trash2 size={15} /> Delete folder</button>
+      <label>Move to <select aria-label="Move folder to" value="choose" onchange={(e) => { const destination = e.currentTarget.value; if (destination !== "choose") { closeContextMenu(); void moveFolder(folder, destination || null); } }}><option value="choose" disabled>Choose a folder?</option><option value="" disabled={!folder.parent_id}>Files</option>{#each folders.filter(f => canMoveFolder(folder, f)) as destination}<option value={destination.id} disabled={folder.parent_id === destination.id}>{filePath({title: destination.name, folder_id: destination.parent_id}, folders)}</option>{/each}</select></label>
+    {:else if contextMenu.kind === "trash" && deleted}
+      <button role="menuitem" onclick={() => { closeContextMenu(); trashPreview = deleted; }}><Eye size={15} /> Preview</button>
+      <button role="menuitem" onclick={() => { closeContextMenu(); void restore(deleted); }}><RotateCcw size={15} /> Restore</button>
+      <button role="menuitem" onclick={() => { closeContextMenu(); permanentDelete = [deleted.id]; }}><Trash2 size={15} /> Delete permanently</button>
+    {:else if contextMenu.kind === "background"}
+      <button role="menuitem" disabled={creating} onclick={() => { closeContextMenu(); void create(); }}><FilePlus size={15} /> New file</button>
+      <button role="menuitem" onclick={() => { closeContextMenu(); folderParent = null; folderName = ""; folderError = ""; folderDialogOpen = true; }}><FolderPlus size={15} /> New folder</button>
+    {/if}
+  </div>
+{/if}
 {#if notice}<div class="notice" role="status">
     {notice}<button
       class="icon"

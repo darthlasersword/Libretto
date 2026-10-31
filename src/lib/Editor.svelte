@@ -14,14 +14,13 @@
   } from "@codemirror/commands";
   import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
   import { languages } from "@codemirror/language-data";
-  import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
-  import { tags } from "@lezer/highlight";
+  import { livePreview, previewHighlight } from "./live-preview";
   export let content = "";
   export let onchange: (value: string) => void;
   export let onshowshortcuts: () => void = () => {};
   let host: HTMLDivElement;
   let view: EditorView;
-  export function focusEditor() { view?.focus(); }
+  export function focusEditor() { view?.requestMeasure(); view?.focus(); }
   export function focusAt(x: number, y: number) {
     if (!view) return;
     const lines = Array.from(view.contentDOM.querySelectorAll<HTMLElement>(".cm-line"));
@@ -61,22 +60,6 @@
     view.focus();
   }
   onMount(() => {
-    const highlight = HighlightStyle.define([
-      { tag: tags.heading1, fontSize: "1.65em", fontWeight: "700" },
-      { tag: tags.heading2, fontSize: "1.3em", fontWeight: "700" },
-      { tag: tags.heading3, fontWeight: "700" },
-      { tag: tags.strong, fontWeight: "700" },
-      { tag: tags.emphasis, fontStyle: "italic" },
-      {
-        tag: tags.link,
-        textDecoration: "underline",
-        textUnderlineOffset: "4px",
-      },
-      { tag: tags.url, color: "var(--muted)" },
-      { tag: tags.monospace, backgroundColor: "var(--surface)" },
-      { tag: tags.processingInstruction, color: "var(--muted)" },
-      { tag: tags.meta, color: "var(--muted)" },
-    ]);
     view = new EditorView({
       parent: host,
       state: EditorState.create({
@@ -90,7 +73,8 @@
           drawSelection(),
           EditorView.lineWrapping,
           markdown({ base: markdownLanguage, codeLanguages: languages }),
-          syntaxHighlighting(highlight),
+          previewHighlight,
+          livePreview,
           keymap.of([
             {
               key: "Mod-b",
